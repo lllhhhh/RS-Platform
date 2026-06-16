@@ -1,0 +1,26 @@
+# ============================================================
+# RS-Platform 遥感影像处理系统 - Python 依赖
+# ============================================================
+
+# --- 数据获取：MPC STAC API 查询与 URL 签名 ---
+pystac-client>=0.7.0          # STAC API 客户端，用于搜索哨兵2数据
+planetary-computer>=0.5.0     # MPC URL 签名库，生成带 SAS Token 的下载链接
+
+# --- 栅格数据处理：GeoTIFF 读写与波段操作 ---
+rasterio>=1.3.0               # GDAL Python 封装，用于读写栅格数据
+rioxarray>=0.15.0             # xarray 的栅格扩展，支持 GeoTIFF ↔ xarray 转换
+xarray>=2024.1.0              # 多维数组处理库，支持 ZARR 读写
+numpy>=1.24.0                 # 数值计算基础库
+zarr>=2.16.0,<3               # ZARR v2 格式库（v3 格式与 xarray 存在兼容性问题）
+numcodecs>=0.12.0,<0.15       # 与 zarr v2 兼容的编码器（0.15+ 移除了 blosc.cbuffer_sizes）
+
+# --- 后端服务：FastAPI Web 框架 ---
+fastapi>=0.110.0              # 异步 Web 框架
+uvicorn>=0.27.0               # ASGI 服务器
+psycopg2-binary>=2.9.0       # PostgreSQL 驱动
+geoalchemy2>=0.14.0           # PostGIS SQLAlchemy 扩展
+
+# --- 工具库 ---
+requests>=2.31.0              # HTTP 请求库
+shapely>=2.0.0                # 几何对象处理
+pyproj>=3.6.0                 # 坐标系转换
