@@ -24,3 +24,4 @@ geoalchemy2>=0.14.0           # PostGIS SQLAlchemy 扩展
 requests>=2.31.0              # HTTP 请求库
 shapely>=2.0.0                # 几何对象处理
 pyproj>=3.6.0                 # 坐标系转换
+geopandas>=0.14.0             # 地理空间数据处理（读取 shp 文件）

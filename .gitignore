@@ -30,10 +30,18 @@ ENV/
 # ============================================================
 # 数据文件（运行时生成，体积大时不纳入版本控制）
 # ============================================================
-# data/downloads/
-# data/merged/
-# data/cloud_masked/
-# data/zarr/
+data/downloads/
+data/merged/
+data/cloud_masked/
+data/mosaicked/
+data/zarr/
+data/boundaries/
+data/urls.txt
+data/metadata.json
+data/aoi_geometry.json
+*.tif
+*.tiff
+*.zarr/
 
 # ============================================================
 # 系统文件

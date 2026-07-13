@@ -23,6 +23,7 @@
 
 import argparse
 import importlib.util
+import json
 import sys
 import time
 from pathlib import Path
@@ -30,9 +31,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import (
+    BOUNDARIES_DIR,
+    DEFAULT_AOI_PATH,
     DEFAULT_BBOX,
     DEFAULT_CLOUD_COVER_MAX,
     DEFAULT_DATE_RANGE,
+    MIN_COVERAGE_RATIO,
 )
 
 
@@ -56,6 +60,7 @@ _download_module = _import_script("02_aria2_download")
 _merge_module = _import_script("03_band_merge")
 _cloud_mask_module = _import_script("04_cloud_mask")
 _zarr_module = _import_script("05_tif_to_zarr")
+_mosaic_clip_module = _import_script("07_mosaic_clip")
 
 
 def run_pipeline(
@@ -64,17 +69,23 @@ def run_pipeline(
     cloud_cover_max: int,
     output_dir: Path,
     skip_download: bool = False,
+    aoi_path: str = None,
+    adcode: str = None,
+    admin_name: str = None,
+    min_coverage: float = None,
 ) -> dict:
     """
     执行完整的遥感影像处理管线。
 
     管线流程：
-    1. 搜索 MPC STAC API，获取符合条件的 Sentinel-2 L2A 影像
-    2. 对搜索结果的资产 URL 进行签名（添加 SAS Token）
-    3. 使用 ARIA2 批量下载原始波段（B02、B03、B04、SCL）
-    4. 将单波段合成为 RGB 三通道 TIF
-    5. 使用 SCL 去除云、云阴影、卷云像素
-    6. 将去云后的 TIF 转换为 ZARR 格式
+    1. 搜索 MPC STAC API，获取符合条件的 Sentinel-2 L2A 影像（含覆盖率计算）
+    2. 选择最优场景组合（单日优先，跨日补充）
+    3. 对搜索结果的资产 URL 进行签名（添加 SAS Token）
+    4. 使用 ARIA2 批量下载原始波段（B02、B03、B04、SCL）
+    5. 将单波段合成为 RGB 三通道 TIF
+    6. 使用 SCL 去除云、云阴影、卷云像素
+    7. 多景拼接 + 研究区裁剪
+    8. 将去云后的 TIF 转换为 ZARR 格式
 
     Args:
         bbox: 搜索区域边界框 [min_lon, min_lat, max_lon, max_lat]
@@ -82,10 +93,25 @@ def run_pipeline(
         cloud_cover_max: 最大云量百分比
         output_dir: 输出目录路径
         skip_download: 是否跳过下载步骤（用于测试后续步骤）
+        aoi_path: 研究区 SHP 文件路径
+        adcode: 行政区划代码（如 110000）
+        admin_name: 行政区划名称（如 北京市）
+        min_coverage: 最低覆盖率阈值
 
     Returns:
         dict: 管线执行结果摘要
     """
+    from utils.coverage import (
+        enrich_items_with_coverage,
+        load_aoi_geometry,
+        print_coverage_report,
+        select_optimal_scenes,
+    )
+    from utils.datav_boundary import get_admin_boundary
+
+    if min_coverage is None:
+        min_coverage = MIN_COVERAGE_RATIO
+
     start_time = time.time()
     results = {
         "bbox": bbox,
@@ -98,35 +124,62 @@ def run_pipeline(
     # 确保输出目录存在
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # 加载研究区几何（优先级：adcode > admin-name > aoi > bbox）
+    aoi_geom = None
+    search_area_desc = ""
+    if adcode:
+        shp_path = get_admin_boundary(adcode=adcode, output_dir=BOUNDARIES_DIR)
+        aoi_geom = load_aoi_geometry(aoi_path=str(shp_path))
+        search_area_desc = f"行政区划 adcode={adcode}"
+    elif admin_name:
+        shp_path = get_admin_boundary(name=admin_name, output_dir=BOUNDARIES_DIR)
+        aoi_geom = load_aoi_geometry(aoi_path=str(shp_path))
+        search_area_desc = f"行政区划 {admin_name}"
+    elif aoi_path:
+        print(f"[研究区] 使用 SHP 文件: {aoi_path}")
+        aoi_geom = load_aoi_geometry(aoi_path=aoi_path)
+        search_area_desc = f"SHP: {aoi_path}"
+    else:
+        print(f"[研究区] 使用 bbox: {bbox}")
+        aoi_geom = load_aoi_geometry(bbox=bbox)
+        search_area_desc = f"bbox={bbox}"
+
+    # 保存研究区几何供后续使用
+    from shapely.geometry import mapping as shapely_mapping
+    aoi_geometry_path = output_dir / "aoi_geometry.json"
+    with open(aoi_geometry_path, "w", encoding="utf-8") as f:
+        json.dump(shapely_mapping(aoi_geom), f)
+
     print("\n" + "=" * 60)
     print("RS-Platform: 遥感影像处理管线")
     print("=" * 60)
-    print(f"搜索区域: {bbox}")
+    print(f"搜索区域: {search_area_desc}")
     print(f"日期范围: {date_range}")
     print(f"最大云量: {cloud_cover_max}%")
+    print(f"最低覆盖率: {min_coverage*100:.0f}%")
     print(f"输出目录: {output_dir}")
     print("=" * 60)
 
     # ============================================================
-    # Step 1: STAC 搜索与 URL 签名
+    # Step 1: STAC 搜索与覆盖率计算
     # ============================================================
     print("\n" + "-" * 40)
-    print("Step 1/5: STAC 搜索与 URL 签名")
+    print("Step 1/8: STAC 搜索与覆盖率计算")
     print("-" * 40)
 
     step1_start = time.time()
     try:
         catalog = _search_module.connect_stac_catalog()
-        items = _search_module.search_sentinel2(catalog, bbox, date_range, cloud_cover_max)
+        # 使用 aoi_geom 的 bounds 作为搜索 bbox（当使用行政区划或 SHP 时）
+        search_bbox = list(aoi_geom.bounds) if aoi_geom else bbox
+        items = _search_module.search_sentinel2(catalog, search_bbox, date_range, cloud_cover_max, aoi_geom)
 
         if not items:
             print("[管线] 未找到符合条件的影像，管线终止")
             results["steps"]["search"] = {"status": "no_results", "count": 0}
             return results
 
-        result = _search_module.extract_signed_urls(items, output_dir / "downloads")
-        _search_module.save_aria2_input_file(result["urls"], output_dir / "urls.txt")
-        _search_module.save_metadata_file(result["metadata"], output_dir / "metadata.json")
+        items = enrich_items_with_coverage(items, aoi_geom)
 
         step1_time = time.time() - step1_start
         results["steps"]["search"] = {
@@ -140,14 +193,70 @@ def run_pipeline(
         return results
 
     # ============================================================
-    # Step 2: ARIA2 批量下载
+    # Step 2: 场景选择
+    # ============================================================
+    print("\n" + "-" * 40)
+    print("Step 2/8: 场景选择")
+    print("-" * 40)
+
+    step2_start = time.time()
+    try:
+        selected_items, coverage_report = select_optimal_scenes(items, aoi_geom, min_coverage)
+        print_coverage_report(coverage_report)
+
+        if not selected_items:
+            print("[管线] 无法选择满足覆盖率要求的场景组合，管线终止")
+            results["steps"]["scene_selection"] = {"status": "no_selection"}
+            return results
+
+        step2_time = time.time() - step2_start
+        results["steps"]["scene_selection"] = {
+            "status": "success",
+            "strategy": coverage_report.get("strategy"),
+            "selected_count": len(selected_items),
+            "total_count": len(items),
+            "coverage": coverage_report.get("coverage"),
+            "time_sec": round(step2_time, 1),
+        }
+    except Exception as e:
+        print(f"[错误] Step 2 失败: {e}")
+        results["steps"]["scene_selection"] = {"status": "error", "error": str(e)}
+        return results
+
+    # ============================================================
+    # Step 3: URL 签名
+    # ============================================================
+    print("\n" + "-" * 40)
+    print("Step 3/8: URL 签名")
+    print("-" * 40)
+
+    step3_start = time.time()
+    try:
+        result = _search_module.extract_signed_urls(selected_items, output_dir / "downloads", aoi_geom)
+        result["metadata"]["coverage_report"] = coverage_report
+        _search_module.save_aria2_input_file(result["urls"], output_dir / "urls.txt")
+        _search_module.save_metadata_file(result["metadata"], output_dir / "metadata.json")
+
+        step3_time = time.time() - step3_start
+        results["steps"]["sign_urls"] = {
+            "status": "success",
+            "count": len(selected_items),
+            "time_sec": round(step3_time, 1),
+        }
+    except Exception as e:
+        print(f"[错误] Step 3 失败: {e}")
+        results["steps"]["sign_urls"] = {"status": "error", "error": str(e)}
+        return results
+
+    # ============================================================
+    # Step 4: ARIA2 批量下载
     # ============================================================
     if not skip_download:
         print("\n" + "-" * 40)
-        print("Step 2/5: ARIA2 批量下载")
+        print("Step 4/8: ARIA2 批量下载")
         print("-" * 40)
 
-        step2_start = time.time()
+        step4_start = time.time()
         try:
             downloader = _download_module.Aria2Downloader(
                 data_dir=output_dir,
@@ -157,13 +266,13 @@ def run_pipeline(
             )
             downloader.start()
 
-            step2_time = time.time() - step2_start
+            step4_time = time.time() - step4_start
             results["steps"]["download"] = {
                 "status": "success",
-                "time_sec": round(step2_time, 1),
+                "time_sec": round(step4_time, 1),
             }
         except Exception as e:
-            print(f"[错误] Step 2 失败: {e}")
+            print(f"[错误] Step 4 失败: {e}")
             results["steps"]["download"] = {"status": "error", "error": str(e)}
             return results
     else:
@@ -171,68 +280,90 @@ def run_pipeline(
         results["steps"]["download"] = {"status": "skipped"}
 
     # ============================================================
-    # Step 3: 波段合成
+    # Step 5: 波段合成
     # ============================================================
     print("\n" + "-" * 40)
-    print("Step 3/5: 波段合成")
-    print("-" * 40)
-
-    step3_start = time.time()
-    try:
-        merged_files = _merge_module.merge_all_scenes(output_dir)
-
-        step3_time = time.time() - step3_start
-        results["steps"]["merge"] = {
-            "status": "success",
-            "count": len(merged_files),
-            "time_sec": round(step3_time, 1),
-        }
-    except Exception as e:
-        print(f"[错误] Step 3 失败: {e}")
-        results["steps"]["merge"] = {"status": "error", "error": str(e)}
-        return results
-
-    # ============================================================
-    # Step 4: SCL 去云处理
-    # ============================================================
-    print("\n" + "-" * 40)
-    print("Step 4/5: SCL 去云处理")
-    print("-" * 40)
-
-    step4_start = time.time()
-    try:
-        masked_files = _cloud_mask_module.process_all_merged_scenes(output_dir)
-
-        step4_time = time.time() - step4_start
-        results["steps"]["cloud_mask"] = {
-            "status": "success",
-            "count": len(masked_files),
-            "time_sec": round(step4_time, 1),
-        }
-    except Exception as e:
-        print(f"[错误] Step 4 失败: {e}")
-        results["steps"]["cloud_mask"] = {"status": "error", "error": str(e)}
-        return results
-
-    # ============================================================
-    # Step 5: TIF → ZARR 转换
-    # ============================================================
-    print("\n" + "-" * 40)
-    print("Step 5/5: TIF → ZARR 转换")
+    print("Step 5/8: 波段合成")
     print("-" * 40)
 
     step5_start = time.time()
     try:
-        zarr_paths = _zarr_module.convert_all_to_zarr(output_dir)
+        merged_files = _merge_module.merge_all_scenes(output_dir)
 
         step5_time = time.time() - step5_start
-        results["steps"]["zarr_convert"] = {
+        results["steps"]["merge"] = {
             "status": "success",
-            "count": len(zarr_paths),
+            "count": len(merged_files),
             "time_sec": round(step5_time, 1),
         }
     except Exception as e:
         print(f"[错误] Step 5 失败: {e}")
+        results["steps"]["merge"] = {"status": "error", "error": str(e)}
+        return results
+
+    # ============================================================
+    # Step 6: SCL 去云处理
+    # ============================================================
+    print("\n" + "-" * 40)
+    print("Step 6/8: SCL 去云处理")
+    print("-" * 40)
+
+    step6_start = time.time()
+    try:
+        masked_files = _cloud_mask_module.process_all_merged_scenes(output_dir)
+
+        step6_time = time.time() - step6_start
+        results["steps"]["cloud_mask"] = {
+            "status": "success",
+            "count": len(masked_files),
+            "time_sec": round(step6_time, 1),
+        }
+    except Exception as e:
+        print(f"[错误] Step 6 失败: {e}")
+        results["steps"]["cloud_mask"] = {"status": "error", "error": str(e)}
+        return results
+
+    # ============================================================
+    # Step 7: 多景拼接 + 研究区裁剪
+    # ============================================================
+    print("\n" + "-" * 40)
+    print("Step 7/8: 拼接 + 裁剪")
+    print("-" * 40)
+
+    step7_start = time.time()
+    try:
+        mosaicked_path = _mosaic_clip_module.process_mosaic_clip(output_dir)
+
+        step7_time = time.time() - step7_start
+        results["steps"]["mosaic_clip"] = {
+            "status": "success" if mosaicked_path else "skipped",
+            "output_path": str(mosaicked_path) if mosaicked_path else None,
+            "time_sec": round(step7_time, 1),
+        }
+    except Exception as e:
+        print(f"[错误] Step 7 失败: {e}")
+        results["steps"]["mosaic_clip"] = {"status": "error", "error": str(e)}
+        return results
+
+    # ============================================================
+    # Step 8: TIF → ZARR 转换
+    # ============================================================
+    print("\n" + "-" * 40)
+    print("Step 8/8: TIF → ZARR 转换")
+    print("-" * 40)
+
+    step8_start = time.time()
+    try:
+        zarr_paths = _zarr_module.convert_all_to_zarr(output_dir)
+
+        step8_time = time.time() - step8_start
+        results["steps"]["zarr_convert"] = {
+            "status": "success",
+            "count": len(zarr_paths),
+            "time_sec": round(step8_time, 1),
+        }
+    except Exception as e:
+        print(f"[错误] Step 8 失败: {e}")
         results["steps"]["zarr_convert"] = {"status": "error", "error": str(e)}
         return results
 
@@ -250,8 +381,10 @@ def run_pipeline(
     print(f"  原始波段: {output_dir / 'downloads'}")
     print(f"  合成 TIF: {output_dir / 'merged'}")
     print(f"  去云 TIF: {output_dir / 'cloud_masked'}")
+    print(f"  拼接裁剪: {output_dir / 'mosaicked'}")
     print(f"  ZARR 数据: {output_dir / 'zarr'}")
     print(f"  元数据: {output_dir / 'metadata.json'}")
+    print(f"  研究区几何: {output_dir / 'aoi_geometry.json'}")
     print("=" * 60)
 
     return results
@@ -267,12 +400,29 @@ def main():
   # 使用默认参数（北京市区域）
   python scripts/06_pipeline.py
 
-  # 自定义参数
+  # 使用 bbox
   python scripts/06_pipeline.py \\
       --bbox 116.0 39.0 117.0 40.0 \\
       --date "2024-01-01/2024-06-30" \\
       --cloud-cover 20 \\
       --output ./data
+
+  # 使用 shp 文件
+  python scripts/06_pipeline.py \\
+      --aoi ./data/beijing_boundary.shp \\
+      --date "2024-01-01/2024-06-30" \\
+      --cloud-cover 20 \\
+      --output ./data
+
+  # 使用行政区划 adcode
+  python scripts/06_pipeline.py \\
+      --adcode 110000 \\
+      --date "2024-01-01/2024-06-30"
+
+  # 使用行政区划名称（模糊搜索）
+  python scripts/06_pipeline.py \\
+      --admin-name "北京市" \\
+      --date "2024-01-01/2024-06-30"
 
   # 跳过下载（仅测试后续处理步骤）
   python scripts/06_pipeline.py --skip-download
@@ -287,6 +437,24 @@ def main():
         help=f"搜索区域边界框 (默认: {DEFAULT_BBOX})",
     )
     parser.add_argument(
+        "--aoi",
+        type=str,
+        default=DEFAULT_AOI_PATH,
+        help="研究区 SHP 文件路径",
+    )
+    parser.add_argument(
+        "--adcode",
+        type=str,
+        default=None,
+        help="行政区划代码（如 110000），自动从 DataV 获取边界",
+    )
+    parser.add_argument(
+        "--admin-name",
+        type=str,
+        default=None,
+        help="行政区划名称（如 北京市），模糊搜索并自动获取边界",
+    )
+    parser.add_argument(
         "--date",
         type=str,
         default=DEFAULT_DATE_RANGE,
@@ -297,6 +465,12 @@ def main():
         type=int,
         default=DEFAULT_CLOUD_COVER_MAX,
         help=f"最大云量百分比 (默认: {DEFAULT_CLOUD_COVER_MAX})",
+    )
+    parser.add_argument(
+        "--min-coverage",
+        type=float,
+        default=MIN_COVERAGE_RATIO,
+        help=f"最低覆盖率阈值 (默认: {MIN_COVERAGE_RATIO})",
     )
     parser.add_argument(
         "--output",
@@ -319,6 +493,10 @@ def main():
         cloud_cover_max=args.cloud_cover,
         output_dir=output_dir,
         skip_download=args.skip_download,
+        aoi_path=args.aoi,
+        adcode=args.adcode,
+        admin_name=args.admin_name,
+        min_coverage=args.min_coverage,
     )
 
 

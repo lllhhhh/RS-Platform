@@ -23,6 +23,12 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # Microsoft Planetary Computer STAC API 端点
 MPC_STAC_API_URL = "https://planetarycomputer.microsoft.com/api/stac/v1"
 
+# ============================================================
+# 阿里云 DataV 行政区划 API 配置
+# ============================================================
+# DataV 行政区划 GeoJSON API 端点
+DATAV_API_BASE = "https://geo.datav.aliyun.com/areas_v3/bound"
+
 # Sentinel-2 L2A（Level-2A，大气校正后）集合名称
 SENTINEL2_COLLECTION = "sentinel-2-l2a"
 
@@ -77,6 +83,7 @@ DOWNLOADS_DIR = DATA_DIR / "downloads"      # ARIA2 下载的原始波段
 MERGED_DIR = DATA_DIR / "merged"            # 波段合成后的 RGB TIF
 CLOUD_MASKED_DIR = DATA_DIR / "cloud_masked" # 去云后的 TIF
 ZARR_DIR = DATA_DIR / "zarr"                # ZARR 输出目录
+BOUNDARIES_DIR = DATA_DIR / "boundaries"    # 行政区划 SHP 缓存目录
 
 # ============================================================
 # ARIA2 配置
@@ -104,11 +111,18 @@ TOKEN_REFRESH_INTERVAL_SEC = 25 * 60  # 1500 秒
 # 示例：北京市区域
 DEFAULT_BBOX = [116.0, 39.0, 117.0, 40.0]
 
+# 默认研究区 SHP 文件路径（None 表示使用 bbox）
+DEFAULT_AOI_PATH = None
+
 # 默认日期范围
 DEFAULT_DATE_RANGE = "2024-01-01/2024-01-05"
 
 # 默认最大云量百分比
 DEFAULT_CLOUD_COVER_MAX = 20
+
+# 最低覆盖率阈值（0.95 = 95%）
+# 场景组合对研究区的覆盖率低于此值时发出警告
+MIN_COVERAGE_RATIO = 0.95
 
 # ============================================================
 # ZARR 输出配置

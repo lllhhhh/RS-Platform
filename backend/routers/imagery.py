@@ -139,13 +139,26 @@ async def trigger_download(request: DownloadRequest, background_tasks: Backgroun
     """
     触发新的影像下载任务。
 
-    在后台执行完整的处理管线（搜索 → 下载 → 合成 → 去云 → ZARR 转换）。
+    在后台执行完整的处理管线（搜索 → 场景选择 → 下载 → 合成 → 去云 → 拼接裁剪 → ZARR 转换）。
     请求立即返回，任务在后台异步执行。
 
+    研究区输入方式（优先级：adcode > admin_name > aoi_path > bbox）：
+    - adcode: 行政区划代码（如 "110000"）
+    - admin_name: 行政区划名称（如 "北京市"）
+    - aoi_path: SHP 文件路径
+    - bbox: 边界框
+
     Args:
-        request: 下载请求参数（区域、日期、云量）
+        request: 下载请求参数
     """
     import importlib.util
+
+    # 验证至少提供了一种研究区输入方式
+    if not any([request.adcode, request.admin_name, request.aoi_path, request.bbox]):
+        raise HTTPException(
+            status_code=400,
+            detail="必须提供一种研究区输入方式：adcode、admin_name、aoi_path 或 bbox",
+        )
 
     # 动态导入管线模块
     scripts_dir = Path(__file__).resolve().parent.parent.parent / "scripts"
@@ -157,18 +170,31 @@ async def trigger_download(request: DownloadRequest, background_tasks: Backgroun
     # 在后台任务中执行管线
     background_tasks.add_task(
         pipeline_module.run_pipeline,
-        bbox=request.bbox,
+        bbox=request.bbox or [116.0, 39.0, 117.0, 40.0],  # 默认 bbox
         date_range=request.date_range,
         cloud_cover_max=request.cloud_cover_max,
         output_dir=Path(__file__).resolve().parent.parent.parent / "data",
+        adcode=request.adcode,
+        admin_name=request.admin_name,
+        aoi_path=request.aoi_path,
     )
+
+    # 构建响应参数
+    params = {
+        "date_range": request.date_range,
+        "cloud_cover_max": request.cloud_cover_max,
+    }
+    if request.adcode:
+        params["adcode"] = request.adcode
+    elif request.admin_name:
+        params["admin_name"] = request.admin_name
+    elif request.aoi_path:
+        params["aoi_path"] = request.aoi_path
+    else:
+        params["bbox"] = request.bbox
 
     return {
         "status": "accepted",
         "message": "下载任务已提交，正在后台处理",
-        "params": {
-            "bbox": request.bbox,
-            "date_range": request.date_range,
-            "cloud_cover_max": request.cloud_cover_max,
-        },
+        "params": params,
     }

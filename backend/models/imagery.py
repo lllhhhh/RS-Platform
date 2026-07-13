@@ -25,6 +25,7 @@ class SceneMetadata(BaseModel):
     date: str = Field(..., description="采集日期 YYYYMMDD")
     cloud_cover: float = Field(..., description="云量百分比")
     bbox: Optional[List[float]] = Field(None, description="边界框 [min_lon, min_lat, max_lon, max_lat]")
+    coverage_ratio: Optional[float] = Field(None, description="对研究区的覆盖率 (0.0~1.0)")
     bands: dict = Field(default_factory=dict, description="各波段信息")
 
 
@@ -51,12 +52,31 @@ class ImageryDetail(BaseModel):
 
 
 class DownloadRequest(BaseModel):
-    """影像下载请求"""
-    bbox: List[float] = Field(
-        ...,
+    """影像下载请求
+
+    研究区输入方式（优先级：adcode > admin_name > aoi_path > bbox）：
+    - adcode: 行政区划代码（如 "110000"）
+    - admin_name: 行政区划名称（如 "北京市"）
+    - aoi_path: SHP 文件路径
+    - bbox: 边界框 [min_lon, min_lat, max_lon, max_lat]
+    """
+    bbox: Optional[List[float]] = Field(
+        default=None,
         description="搜索区域边界框 [min_lon, min_lat, max_lon, max_lat]",
         min_length=4,
         max_length=4,
+    )
+    adcode: Optional[str] = Field(
+        default=None,
+        description="行政区划代码（如 '110000'），自动从 DataV 获取边界",
+    )
+    admin_name: Optional[str] = Field(
+        default=None,
+        description="行政区划名称（如 '北京市'），模糊搜索并自动获取边界",
+    )
+    aoi_path: Optional[str] = Field(
+        default=None,
+        description="研究区 SHP 文件路径",
     )
     date_range: str = Field(
         ...,

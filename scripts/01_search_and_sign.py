@@ -30,13 +30,23 @@ import pystac_client
 
 from config.settings import (
     BANDS,
+    BOUNDARIES_DIR,
+    DEFAULT_AOI_PATH,
     DEFAULT_BBOX,
     DEFAULT_CLOUD_COVER_MAX,
     DEFAULT_DATE_RANGE,
     DOWNLOADS_DIR,
+    MIN_COVERAGE_RATIO,
     MPC_STAC_API_URL,
     SENTINEL2_COLLECTION,
 )
+from utils.coverage import (
+    enrich_items_with_coverage,
+    load_aoi_geometry,
+    print_coverage_report,
+    select_optimal_scenes,
+)
+from utils.datav_boundary import get_admin_boundary
 
 
 def connect_stac_catalog() -> pystac_client.Client:
@@ -63,6 +73,7 @@ def search_sentinel2(
     bbox: list,
     date_range: str,
     cloud_cover_max: int,
+    aoi_geom=None,
 ) -> list:
     """
     搜索 Sentinel-2 L2A 影像。
@@ -72,18 +83,27 @@ def search_sentinel2(
         bbox: 边界框 [min_lon, min_lat, max_lon, max_lat]
         date_range: 日期范围字符串，如 "2024-01-01/2024-06-30"
         cloud_cover_max: 最大云量百分比
+        aoi_geom: 研究区几何对象（Shapely Geometry），用于 intersects 搜索
 
     Returns:
         list: 搜索到的 STAC Item 列表
     """
-    print(f"[STAC] 搜索参数: bbox={bbox}, 日期={date_range}, 最大云量={cloud_cover_max}%")
+    from shapely.geometry import mapping
 
-    search = catalog.search(
-        collections=[SENTINEL2_COLLECTION],
-        bbox=bbox,
-        datetime=date_range,
-        query={"eo:cloud_cover": {"lt": cloud_cover_max}},
-    )
+    search_params = {
+        "collections": [SENTINEL2_COLLECTION],
+        "datetime": date_range,
+        "query": {"eo:cloud_cover": {"lt": cloud_cover_max}},
+    }
+
+    if aoi_geom is not None:
+        print(f"[STAC] 搜索参数: intersects=研究区几何, 日期={date_range}, 最大云量={cloud_cover_max}%")
+        search_params["intersects"] = mapping(aoi_geom)
+    else:
+        print(f"[STAC] 搜索参数: bbox={bbox}, 日期={date_range}, 最大云量={cloud_cover_max}%")
+        search_params["bbox"] = bbox
+
+    search = catalog.search(**search_params)
 
     items = list(search.items())
     print(f"[STAC] 共找到 {len(items)} 景影像")
@@ -115,7 +135,7 @@ def generate_output_filename(item, band_name: str) -> str:
     return f"{scene_id}_{date_str}_{cloud_str}_{band_name}.tif"
 
 
-def extract_signed_urls(items: list, download_dir: Path) -> dict:
+def extract_signed_urls(items: list, download_dir: Path, aoi_geom=None) -> dict:
     """
     从搜索结果中提取各波段的签名下载 URL。
 
@@ -127,10 +147,13 @@ def extract_signed_urls(items: list, download_dir: Path) -> dict:
     Args:
         items: STAC Item 列表
         download_dir: 下载目录路径
+        aoi_geom: 研究区几何对象（用于计算覆盖率）
 
     Returns:
         dict: 元数据字典，包含每个 scene 的详细信息
     """
+    from utils.coverage import compute_coverage
+
     # 确保下载目录存在
     download_dir.mkdir(parents=True, exist_ok=True)
 
@@ -145,12 +168,19 @@ def extract_signed_urls(items: list, download_dir: Path) -> dict:
         # 重新签名（sign_inplace 已在 Client.open 时设置，此处再次确保）
         signed_item = planetary_computer.sign(item)
 
+        # 计算覆盖率
+        coverage_ratio = None
+        if aoi_geom is not None:
+            coverage_ratio = compute_coverage(item.geometry, aoi_geom)
+
         scene_meta = {
             "scene_id": item.id,
             "datetime": item.datetime.isoformat(),
             "date": item.datetime.strftime("%Y%m%d"),
             "cloud_cover": item.properties.get("eo:cloud_cover", 0),
             "bbox": list(item.bbox) if item.bbox else None,
+            "coverage_ratio": coverage_ratio,
+            "geometry": item.geometry,
             "bands": {},
         }
 
@@ -218,11 +248,29 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
+  # 使用 bbox
   python scripts/01_search_and_sign.py \\
       --bbox 116.0 39.0 117.0 40.0 \\
       --date "2024-01-01/2024-06-30" \\
       --cloud-cover 20 \\
       --output ./data
+
+  # 使用 shp 文件
+  python scripts/01_search_and_sign.py \\
+      --aoi ./data/beijing_boundary.shp \\
+      --date "2024-01-01/2024-06-30" \\
+      --cloud-cover 20 \\
+      --output ./data
+
+  # 使用行政区划 adcode
+  python scripts/01_search_and_sign.py \\
+      --adcode 110000 \\
+      --date "2024-01-01/2024-06-30"
+
+  # 使用行政区划名称（模糊搜索）
+  python scripts/01_search_and_sign.py \\
+      --admin-name "北京市" \\
+      --date "2024-01-01/2024-06-30"
         """,
     )
     parser.add_argument(
@@ -232,6 +280,24 @@ def main():
         default=DEFAULT_BBOX,
         metavar=("MIN_LON", "MIN_LAT", "MAX_LON", "MAX_LAT"),
         help=f"搜索区域边界框 (默认: {DEFAULT_BBOX})",
+    )
+    parser.add_argument(
+        "--aoi",
+        type=str,
+        default=DEFAULT_AOI_PATH,
+        help="研究区 SHP 文件路径",
+    )
+    parser.add_argument(
+        "--adcode",
+        type=str,
+        default=None,
+        help="行政区划代码（如 110000），自动从 DataV 获取边界",
+    )
+    parser.add_argument(
+        "--admin-name",
+        type=str,
+        default=None,
+        help="行政区划名称（如 北京市），模糊搜索并自动获取边界",
     )
     parser.add_argument(
         "--date",
@@ -244,6 +310,12 @@ def main():
         type=int,
         default=DEFAULT_CLOUD_COVER_MAX,
         help=f"最大云量百分比 (默认: {DEFAULT_CLOUD_COVER_MAX})",
+    )
+    parser.add_argument(
+        "--min-coverage",
+        type=float,
+        default=MIN_COVERAGE_RATIO,
+        help=f"最低覆盖率阈值 (默认: {MIN_COVERAGE_RATIO})",
     )
     parser.add_argument(
         "--output",
@@ -259,31 +331,69 @@ def main():
     print("RS-Platform: STAC 搜索与 URL 签名")
     print("=" * 60)
 
-    # 1. 连接 STAC 目录
+    # 1. 加载研究区几何（优先级：adcode > admin-name > aoi > bbox）
+    aoi_geom = None
+    if args.adcode:
+        shp_path = get_admin_boundary(adcode=args.adcode, output_dir=BOUNDARIES_DIR)
+        aoi_geom = load_aoi_geometry(aoi_path=str(shp_path))
+    elif args.admin_name:
+        shp_path = get_admin_boundary(name=args.admin_name, output_dir=BOUNDARIES_DIR)
+        aoi_geom = load_aoi_geometry(aoi_path=str(shp_path))
+    elif args.aoi:
+        print(f"[研究区] 使用 SHP 文件: {args.aoi}")
+        aoi_geom = load_aoi_geometry(aoi_path=args.aoi)
+    else:
+        print(f"[研究区] 使用 bbox: {args.bbox}")
+        aoi_geom = load_aoi_geometry(bbox=args.bbox)
+
+    # 2. 连接 STAC 目录
     catalog = connect_stac_catalog()
 
-    # 2. 搜索影像
-    items = search_sentinel2(catalog, args.bbox, args.date, args.cloud_cover)
+    # 3. 搜索影像（使用 aoi_geom 的 bounds 作为搜索 bbox）
+    search_bbox = list(aoi_geom.bounds) if aoi_geom else args.bbox
+    items = search_sentinel2(catalog, search_bbox, args.date, args.cloud_cover, aoi_geom)
 
     if not items:
         print("[STAC] 未找到符合条件的影像，请调整搜索参数")
         return
 
-    # 3. 提取签名 URL 和元数据
-    result = extract_signed_urls(items, output_dir / "downloads")
+    # 4. 计算覆盖率并排序
+    items = enrich_items_with_coverage(items, aoi_geom)
 
-    # 4. 保存 ARIA2 输入文件
+    # 5. 选择最优场景组合
+    selected_items, report = select_optimal_scenes(items, aoi_geom, args.min_coverage)
+    print_coverage_report(report)
+
+    if not selected_items:
+        print("[STAC] 无法选择满足覆盖率要求的场景组合")
+        return
+
+    # 6. 提取签名 URL 和元数据（仅处理选中的场景）
+    result = extract_signed_urls(selected_items, output_dir / "downloads", aoi_geom)
+
+    # 7. 保存场景选择报告
+    result["metadata"]["coverage_report"] = report
+
+    # 8. 保存 ARIA2 输入文件
     aria2_input_path = output_dir / "urls.txt"
     save_aria2_input_file(result["urls"], aria2_input_path)
 
-    # 5. 保存元数据文件
+    # 9. 保存元数据文件
     metadata_path = output_dir / "metadata.json"
     save_metadata_file(result["metadata"], metadata_path)
 
+    # 10. 保存研究区几何（供后续拼接裁剪使用）
+    aoi_geometry_path = output_dir / "aoi_geometry.json"
+    from shapely.geometry import mapping
+    with open(aoi_geometry_path, "w", encoding="utf-8") as f:
+        json.dump(mapping(aoi_geom), f)
+    print(f"[研究区] 几何已保存: {aoi_geometry_path}")
+
     print("=" * 60)
-    print(f"完成！共处理 {len(items)} 景影像")
+    print(f"完成！共选中 {len(selected_items)} 景影像（原始 {len(items)} 景）")
     print(f"  ARIA2 输入文件: {aria2_input_path}")
     print(f"  元数据文件: {metadata_path}")
+    print(f"  研究区几何: {aoi_geometry_path}")
     print(f"  下载目录: {output_dir / 'downloads'}")
     print("=" * 60)
 
