@@ -152,12 +152,13 @@ def merge_rgb_bands(
     return output_path
 
 
-def merge_all_scenes(data_dir: Path) -> list:
+def merge_all_scenes(data_dir: Path, scene_ids: set = None) -> list:
     """
-    对所有已下载场景执行波段合成。
+    对已下载场景执行波段合成。
 
     Args:
         data_dir: 数据目录
+        scene_ids: 要处理的 scene_id 集合，为 None 时处理全部
 
     Returns:
         list: 所有合成后的 TIF 文件路径
@@ -175,6 +176,11 @@ def merge_all_scenes(data_dir: Path) -> list:
         print("[波段合成] 未找到已下载的波段文件")
         print(f"  请检查下载目录: {downloads_dir}")
         return []
+
+    # 过滤：只处理指定的 scene_id
+    if scene_ids is not None:
+        scenes = {sid: bands for sid, bands in scenes.items() if sid in scene_ids}
+        print(f"[波段合成] 过滤后保留 {len(scenes)} 个场景")
 
     # 对每个场景执行合成
     merged_files = []

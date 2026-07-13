@@ -165,13 +165,21 @@ def convert_all_to_zarr(data_dir: Path) -> list:
         list: 所有 ZARR 目录路径
     """
     cloud_masked_dir = data_dir / "cloud_masked"
+    mosaicked_dir = data_dir / "mosaicked"
     zarr_dir = data_dir / "zarr"
 
     # 确保输出目录存在
     zarr_dir.mkdir(parents=True, exist_ok=True)
 
-    # 扫描去云后的 TIF 文件
-    tif_files = sorted(cloud_masked_dir.glob("*_cloudmasked.tif"))
+    # 按优先级扫描 TIF 文件：mosaicked > cloud_masked > merged
+    tif_files = []
+    if mosaicked_dir.exists():
+        tif_files = sorted(mosaicked_dir.glob("*.tif"))
+        if tif_files:
+            print(f"[ZARR] 使用拼接裁剪后的 TIF: {mosaicked_dir}")
+
+    if not tif_files:
+        tif_files = sorted(cloud_masked_dir.glob("*_cloudmasked.tif"))
 
     if not tif_files:
         # 如果没有去云文件，尝试使用 merged 目录
@@ -181,7 +189,7 @@ def convert_all_to_zarr(data_dir: Path) -> list:
             print("[ZARR] 未找到去云文件，使用合成后的 RGB TIF")
         else:
             print("[ZARR] 未找到可转换的 TIF 文件")
-            print(f"  检查目录: {cloud_masked_dir} 或 {data_dir / 'merged'}")
+            print(f"  检查目录: {mosaicked_dir}, {cloud_masked_dir} 或 {data_dir / 'merged'}")
             return []
 
     print(f"[ZARR] 找到 {len(tif_files)} 个 TIF 文件待转换")

@@ -323,6 +323,11 @@ def main():
         default=str(Path(__file__).resolve().parent.parent / "data"),
         help="输出目录 (默认: ./data)",
     )
+    parser.add_argument(
+        "--auto-select",
+        action="store_true",
+        help="自动选择最优时相（跳过交互选择）",
+    )
 
     args = parser.parse_args()
     output_dir = Path(args.output)
@@ -361,7 +366,7 @@ def main():
     items = enrich_items_with_coverage(items, aoi_geom)
 
     # 5. 选择最优场景组合
-    selected_items, report = select_optimal_scenes(items, aoi_geom, args.min_coverage)
+    selected_items, report = select_optimal_scenes(items, aoi_geom, args.min_coverage, auto_select=args.auto_select)
     print_coverage_report(report)
 
     if not selected_items:

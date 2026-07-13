@@ -73,13 +73,14 @@ def run_pipeline(
     adcode: str = None,
     admin_name: str = None,
     min_coverage: float = None,
+    auto_select: bool = False,
 ) -> dict:
     """
     执行完整的遥感影像处理管线。
 
     管线流程：
     1. 搜索 MPC STAC API，获取符合条件的 Sentinel-2 L2A 影像（含覆盖率计算）
-    2. 选择最优场景组合（单日优先，跨日补充）
+    2. 按日期分析覆盖率，交互式让用户选择要下载的时相（--auto-select 可跳过交互）
     3. 对搜索结果的资产 URL 进行签名（添加 SAS Token）
     4. 使用 ARIA2 批量下载原始波段（B02、B03、B04、SCL）
     5. 将单波段合成为 RGB 三通道 TIF
@@ -97,6 +98,7 @@ def run_pipeline(
         adcode: 行政区划代码（如 110000）
         admin_name: 行政区划名称（如 北京市）
         min_coverage: 最低覆盖率阈值
+        auto_select: 是否自动选择最优时相（跳过交互，默认 False）
 
     Returns:
         dict: 管线执行结果摘要
@@ -201,7 +203,7 @@ def run_pipeline(
 
     step2_start = time.time()
     try:
-        selected_items, coverage_report = select_optimal_scenes(items, aoi_geom, min_coverage)
+        selected_items, coverage_report = select_optimal_scenes(items, aoi_geom, min_coverage, auto_select=auto_select)
         print_coverage_report(coverage_report)
 
         if not selected_items:
@@ -218,6 +220,9 @@ def run_pipeline(
             "coverage": coverage_report.get("coverage"),
             "time_sec": round(step2_time, 1),
         }
+
+        # 提取选中场景的 ID，后续步骤只处理这些场景
+        selected_scene_ids = {item.id for item in selected_items}
     except Exception as e:
         print(f"[错误] Step 2 失败: {e}")
         results["steps"]["scene_selection"] = {"status": "error", "error": str(e)}
@@ -288,7 +293,7 @@ def run_pipeline(
 
     step5_start = time.time()
     try:
-        merged_files = _merge_module.merge_all_scenes(output_dir)
+        merged_files = _merge_module.merge_all_scenes(output_dir, scene_ids=selected_scene_ids)
 
         step5_time = time.time() - step5_start
         results["steps"]["merge"] = {
@@ -310,7 +315,7 @@ def run_pipeline(
 
     step6_start = time.time()
     try:
-        masked_files = _cloud_mask_module.process_all_merged_scenes(output_dir)
+        masked_files = _cloud_mask_module.process_all_merged_scenes(output_dir, scene_ids=selected_scene_ids)
 
         step6_time = time.time() - step6_start
         results["steps"]["cloud_mask"] = {
@@ -332,12 +337,13 @@ def run_pipeline(
 
     step7_start = time.time()
     try:
-        mosaicked_path = _mosaic_clip_module.process_mosaic_clip(output_dir)
+        mosaicked_paths = _mosaic_clip_module.process_mosaic_clip(output_dir, min_coverage=min_coverage, scene_ids=selected_scene_ids)
 
         step7_time = time.time() - step7_start
         results["steps"]["mosaic_clip"] = {
-            "status": "success" if mosaicked_path else "skipped",
-            "output_path": str(mosaicked_path) if mosaicked_path else None,
+            "status": "success" if mosaicked_paths else "skipped",
+            "output_paths": [str(p) for p in mosaicked_paths] if mosaicked_paths else [],
+            "count": len(mosaicked_paths),
             "time_sec": round(step7_time, 1),
         }
     except Exception as e:
@@ -426,6 +432,9 @@ def main():
 
   # 跳过下载（仅测试后续处理步骤）
   python scripts/06_pipeline.py --skip-download
+
+  # 自动选择最优时相（跳过交互选择）
+  python scripts/06_pipeline.py --auto-select
         """,
     )
     parser.add_argument(
@@ -483,6 +492,11 @@ def main():
         action="store_true",
         help="跳过下载步骤（用于测试后续处理步骤）",
     )
+    parser.add_argument(
+        "--auto-select",
+        action="store_true",
+        help="自动选择最优时相（跳过交互选择）",
+    )
 
     args = parser.parse_args()
     output_dir = Path(args.output)
@@ -497,6 +511,7 @@ def main():
         adcode=args.adcode,
         admin_name=args.admin_name,
         min_coverage=args.min_coverage,
+        auto_select=args.auto_select,
     )
 
 

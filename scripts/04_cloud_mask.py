@@ -194,9 +194,9 @@ def apply_cloud_mask(
     return output_path
 
 
-def process_all_merged_scenes(data_dir: Path) -> list:
+def process_all_merged_scenes(data_dir: Path, scene_ids: set = None) -> list:
     """
-    对所有合成后的 RGB TIF 执行去云处理。
+    对合成后的 RGB TIF 执行去云处理。
 
     流程：
     1. 扫描 merged 目录中的 RGB TIF
@@ -206,6 +206,7 @@ def process_all_merged_scenes(data_dir: Path) -> list:
 
     Args:
         data_dir: 数据目录
+        scene_ids: 要处理的 scene_id 集合，为 None 时处理全部
 
     Returns:
         list: 去云后的 TIF 文件路径列表
@@ -230,6 +231,16 @@ def process_all_merged_scenes(data_dir: Path) -> list:
     # 从文件名提取 scene_id 的正则表达式
     # 文件名格式: {scene_id}_{date}_{cloud_cover}_RGB.tif
     scene_id_pattern = re.compile(r"^(.+?)_\d{8}_[\d.]+_RGB\.tif$")
+
+    # 过滤：只处理指定的 scene_id
+    if scene_ids is not None:
+        filtered = []
+        for rgb_path in rgb_files:
+            match = scene_id_pattern.match(rgb_path.name)
+            if match and match.group(1) in scene_ids:
+                filtered.append(rgb_path)
+        rgb_files = filtered
+        print(f"[去云] 过滤后保留 {len(rgb_files)} 个场景")
 
     masked_files = []
     for rgb_path in rgb_files:
