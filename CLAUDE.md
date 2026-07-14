@@ -42,6 +42,12 @@ python scripts/06_pipeline.py --satellite sentinel1 --admin-name "北京市"
 # ==================== Sentinel-1 SLC（用于 InSAR）====================
 python scripts/06_pipeline.py --satellite sentinel1 --s1-product slc --bbox 116.0 39.0 117.0 40.0 --date "2024-01-01/2024-03-01"
 
+# ==================== 任务管理 ====================
+# 每次运行管线会自动创建独立的任务目录（data/tasks/时间戳_卫星类型）
+python scripts/task_manager.py list           # 列出所有任务
+python scripts/task_manager.py info TASK_ID   # 查看任务详情
+python scripts/task_manager.py cleanup --keep 5  # 清理旧任务（保留最近5个）
+
 # ==================== InSAR 形变监测 ====================
 # 交互式选择主从影像
 python scripts/09_insar_analysis.py --data-dir ./data --polarization vv
@@ -144,16 +150,22 @@ uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
 
 ```
 data/
-├── downloads/        # ARIA2 下载的原始波段 TIF
-├── merged/           # 波段合成后的 TIF（S2: RGB，S1: VV+VH）
-├── cloud_masked/     # 去云后（S2）或 S1 GRD 预处理后的 TIF
-├── mosaicked/        # 拼接裁剪后的 TIF
-├── zarr/             # ZARR 输出
-├── insar/            # InSAR 形变监测输出（形变图、相干性图、分析报告）
-├── boundaries/       # DataV 行政区划 SHP 缓存
-├── urls.txt          # ARIA2 输入文件
-├── metadata.json     # 场景元数据（含 coverage_ratio、geometry、satellite）
-└── aoi_geometry.json # 研究区几何（GeoJSON 格式）
+├── tasks/                          # 任务目录（每次运行自动创建）
+│   ├── 20240115_120000_S1_SLC/    # 任务1：时间戳_卫星类型
+│   │   ├── downloads/             # ARIA2 下载的原始波段 TIF
+│   │   ├── merged/                # 波段合成后的 TIF
+│   │   ├── cloud_masked/          # 去云后或 S1 GRD 预处理后的 TIF
+│   │   ├── mosaicked/             # 拼接裁剪后的 TIF
+│   │   ├── zarr/                  # ZARR 输出
+│   │   ├── insar/                 # InSAR 输出（如适用）
+│   │   ├── urls.txt               # ARIA2 输入文件
+│   │   ├── metadata.json          # 场景元数据
+│   │   ├── aoi_geometry.json      # 研究区几何
+│   │   └── task_info.json         # 任务元信息
+│   ├── 20240116_093000_S2/        # 任务2
+│   └── task_latest -> ...         # 软链接指向最新任务
+├── boundaries/                     # DataV 行政区划 SHP 缓存
+└── ...                             # 其他全局数据
 ```
 
 ## 研究区输入

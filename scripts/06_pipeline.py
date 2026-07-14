@@ -40,6 +40,9 @@ from config.settings import (
     MIN_COVERAGE_RATIO,
 )
 
+# 导入任务管理模块
+_task_manager = _import_script("task_manager")
+
 
 def _import_script(script_name: str):
     """
@@ -125,7 +128,22 @@ def run_pipeline(
         min_coverage = MIN_COVERAGE_RATIO
 
     start_time = time.time()
+
+    # 创建任务目录（如果 output_dir 是默认的 data 目录，则使用任务隔离模式）
+    use_task_dir = str(output_dir) == str(Path(__file__).resolve().parent.parent / "data")
+
+    if use_task_dir:
+        task_dir = _task_manager.create_task_dir(satellite=satellite, s1_product=s1_product)
+        task_id = task_dir.name
+        print(f"[任务] 创建任务目录: {task_id}")
+        print(f"[任务] 任务路径: {task_dir}")
+        output_dir = task_dir
+    else:
+        task_id = None
+        print(f"[输出] 使用自定义输出目录: {output_dir}")
+
     results = {
+        "task_id": task_id,
         "bbox": bbox,
         "date_range": date_range,
         "cloud_cover_max": cloud_cover_max,
@@ -540,11 +558,23 @@ def run_pipeline(
     total_time = time.time() - start_time
     results["total_time_sec"] = round(total_time, 1)
 
+    # 更新任务状态（仅在使用任务目录时）
+    if task_id:
+        _task_manager.update_task_info(task_id, {
+            "status": "completed",
+            "completed_at": datetime.now().isoformat(),
+            "total_time_sec": results["total_time_sec"],
+            "results": results,
+        })
+
     print("\n" + "=" * 60)
     print("管线执行完成！")
     print("=" * 60)
+    if task_id:
+        print(f"任务ID: {task_id}")
     print(f"总耗时: {total_time:.1f} 秒")
     print(f"\n输出文件位置:")
+    print(f"  输出目录: {output_dir}")
     print(f"  原始波段: {output_dir / 'downloads'}")
     print(f"  合成 TIF: {output_dir / 'merged'}")
     print(f"  去云 TIF: {output_dir / 'cloud_masked'}")
@@ -553,6 +583,9 @@ def run_pipeline(
     print(f"  元数据: {output_dir / 'metadata.json'}")
     print(f"  研究区几何: {output_dir / 'aoi_geometry.json'}")
     print("=" * 60)
+    if task_id:
+        print(f"\n查看任务详情: python scripts/task_manager.py info {task_id}")
+        print(f"列出所有任务: python scripts/task_manager.py list")
 
     return results
 
@@ -564,46 +597,40 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
-  # 使用默认参数（北京市区域）
+  # 使用默认参数（北京市区域）- 自动创建任务目录
   python scripts/06_pipeline.py
 
   # 使用 bbox
-  python scripts/06_pipeline.py \\
-      --bbox 116.0 39.0 117.0 40.0 \\
-      --date "2024-01-01/2024-06-30" \\
-      --cloud-cover 20 \\
-      --output ./data
+  python scripts/06_pipeline.py --bbox 116.0 39.0 117.0 40.0
 
   # 使用 shp 文件
-  python scripts/06_pipeline.py \\
-      --aoi ./data/beijing_boundary.shp \\
-      --date "2024-01-01/2024-06-30" \\
-      --cloud-cover 20 \\
-      --output ./data
+  python scripts/06_pipeline.py --aoi ./data/beijing_boundary.shp
 
   # 使用行政区划 adcode
-  python scripts/06_pipeline.py \\
-      --adcode 110000 \\
-      --date "2024-01-01/2024-06-30"
+  python scripts/06_pipeline.py --adcode 110000
 
   # 使用行政区划名称（模糊搜索）
-  python scripts/06_pipeline.py \\
-      --admin-name "北京市" \\
-      --date "2024-01-01/2024-06-30"
+  python scripts/06_pipeline.py --admin-name "北京市"
 
-  # 跳过下载（仅测试后续处理步骤）
-  python scripts/06_pipeline.py --skip-download
+  # 指定自定义输出目录（不使用任务隔离）
+  python scripts/06_pipeline.py --bbox 116.0 39.0 117.0 40.0 --output ./my_output
 
   # 自动选择最优时相（跳过交互选择）
   python scripts/06_pipeline.py --auto-select
 
-  # 下载 Sentinel-1 GRD 影像（SAR 数据，无云量过滤）
+  # S2 波段选择
+  python scripts/06_pipeline.py --bbox 116.0 39.0 117.0 40.0 --bands false_color
+
+  # 下载 Sentinel-1 GRD 影像
   python scripts/06_pipeline.py --satellite sentinel1 --bbox 116.0 39.0 117.0 40.0
-  python scripts/06_pipeline.py --satellite sentinel1 --adcode 110000
-  python scripts/06_pipeline.py --satellite sentinel1 --admin-name "北京市"
 
   # 下载 Sentinel-1 SLC 影像
   python scripts/06_pipeline.py --satellite sentinel1 --s1-product slc --bbox 116.0 39.0 117.0 40.0
+
+任务管理:
+  python scripts/task_manager.py list           # 列出所有任务
+  python scripts/task_manager.py info TASK_ID   # 查看任务详情
+  python scripts/task_manager.py cleanup --keep 5  # 清理旧任务
         """,
     )
     parser.add_argument(

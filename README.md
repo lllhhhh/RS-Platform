@@ -162,6 +162,12 @@ python scripts/06_pipeline.py --satellite sentinel1 --adcode 110000
 # ==================== Sentinel-1 SLC（用于 InSAR）====================
 python scripts/06_pipeline.py --satellite sentinel1 --s1-product slc --bbox 116.0 39.0 117.0 40.0 --date "2024-01-01/2024-03-01"
 
+# ==================== 任务管理 ====================
+# 每次运行管线会自动创建独立的任务目录
+python scripts/task_manager.py list           # 列出所有任务
+python scripts/task_manager.py info TASK_ID   # 查看任务详情
+python scripts/task_manager.py cleanup --keep 5  # 清理旧任务
+
 # ==================== InSAR 形变监测 ====================
 python scripts/09_insar_analysis.py --data-dir ./data --polarization vv
 python scripts/09_insar_analysis.py --master path/master.tif --slave path/slave.tif --polarization vv
@@ -217,19 +223,23 @@ RS-Platform/
 │   ├── 07_mosaic_clip.py        # 多景裁剪（独立/拼接）
 │   ├── 08_s1_preprocess.py      # S1 GRD snappy 预处理
 │   ├── 09_insar_analysis.py     # InSAR 形变监测
-│   └── cdse_s1_slc.py          # CDSE S1 SLC 搜索下载
+│   ├── cdse_s1_slc.py           # CDSE S1 SLC 搜索下载
+│   └── task_manager.py          # 任务管理工具
 ├── backend/
 │   ├── main.py                  # FastAPI 入口
 │   ├── routers/imagery.py       # 影像 API 路由
 │   ├── services/zarr_service.py # ZARR 数据服务
 │   └── models/imagery.py        # 数据模型
 ├── data/
-│   ├── downloads/               # ARIA2 下载的原始波段
-│   ├── merged/                  # 合成后 TIF（S2: RGB, S1: VV+VH）
-│   ├── cloud_masked/            # 去云/S1预处理后的 TIF
-│   ├── mosaicked/               # 裁剪后的 TIF
-│   ├── zarr/                    # ZARR 输出
-│   ├── insar/                   # InSAR 输出（形变图、相干性图、报告）
+│   ├── tasks/                   # 任务目录（每次运行自动创建）
+│   │   ├── 20240115_120000_S1_SLC/  # 任务示例
+│   │   │   ├── downloads/       # 原始波段
+│   │   │   ├── merged/          # 合成后 TIF
+│   │   │   ├── cloud_masked/    # 去云/预处理后 TIF
+│   │   │   ├── mosaicked/       # 裁剪后 TIF
+│   │   │   ├── zarr/            # ZARR 输出
+│   │   │   └── task_info.json   # 任务元信息
+│   │   └── task_latest -> ...   # 软链接指向最新任务
 │   └── boundaries/              # 行政区划 SHP 缓存
 ├── requirements.txt
 └── README.md
