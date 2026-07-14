@@ -79,13 +79,20 @@ def _read_scene_coverage(data_dir: Path) -> dict:
         return {}
 
     # 匹配 TIF 文件名中的 scene_id
-    # 文件名格式: {scene_id}_{date}_{cloud}_cloudmasked.tif 或 _RGB.tif
+    # 文件名格式: {scene_id}_{date}_{cloud}_cloudmasked.tif 或 _RGB.tif 或 _S1_merged.tif
     tif_coverage = {}
     cloud_masked_dir = data_dir / "cloud_masked"
-    tif_dir = cloud_masked_dir if cloud_masked_dir.exists() else data_dir / "merged"
-    suffix = "_cloudmasked.tif" if cloud_masked_dir.exists() else "_RGB.tif"
+    merged_dir = data_dir / "merged"
 
-    for tif_file in sorted(tif_dir.glob(f"*{suffix}")):
+    # 扫描所有可能的 TIF 文件
+    tif_files = []
+    if cloud_masked_dir.exists():
+        tif_files.extend(sorted(cloud_masked_dir.glob("*_cloudmasked.tif")))
+    if merged_dir.exists():
+        tif_files.extend(sorted(merged_dir.glob("*_RGB.tif")))
+        tif_files.extend(sorted(merged_dir.glob("*_S1_merged.tif")))
+
+    for tif_file in tif_files:
         fname = tif_file.name
         for scene_id, coverage in scene_coverage.items():
             if fname.startswith(scene_id):
@@ -343,12 +350,22 @@ def process_mosaic_clip(
             if all_full:
                 can_clip_independently = True
                 print(f"[策略] {len(tif_files)} 景各自覆盖率 >= {min_coverage*100:.0f}%，独立裁剪")
+        else:
+            # 没有覆盖率信息时，对于 S1 影像默认独立裁剪（避免拼接失败）
+            # 通过检查文件名判断是否为 S1 影像
+            is_s1 = any("_S1_merged.tif" in f.name for f in tif_files)
+            if is_s1:
+                can_clip_independently = True
+                print(f"[策略] S1 影像无覆盖率信息，默认独立裁剪")
 
     if can_clip_independently:
         results = []
         for tif_file in tif_files:
-            # 从文件名生成输出名：去掉 _cloudmasked 后缀，加 _clipped
-            out_name = tif_file.name.replace("_cloudmasked.tif", "_clipped.tif").replace("_RGB.tif", "_clipped.tif")
+            # 从文件名生成输出名：去掉后缀，加 _clipped
+            out_name = (tif_file.name
+                       .replace("_cloudmasked.tif", "_clipped.tif")
+                       .replace("_RGB.tif", "_clipped.tif")
+                       .replace("_S1_merged.tif", "_clipped.tif"))
             output_path = output_dir / out_name
             result = clip_single_scene(tif_file, aoi_geom, output_path)
             if result:
