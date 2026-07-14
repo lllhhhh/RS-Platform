@@ -116,18 +116,26 @@ def clip_single_scene(
         output_path: 输出文件路径
 
     Returns:
-        Path: 输出文件路径
+        Path: 输出文件路径，如果无法裁剪则返回 None
     """
     print(f"[裁剪] 独立裁剪: {scene_path.name}")
 
     with rasterio.open(scene_path) as src:
         src_crs = src.crs
+
+        # 检查是否有 CRS
+        if src_crs is None:
+            print(f"  [跳过] 影像没有坐标参考系统（CRS），无法裁剪")
+            print(f"  [提示] SLC 数据需要先进行地形校正才能裁剪")
+            print(f"  [提示] SLC 数据通常用于 InSAR 分析，InSAR 输出会有正确的地理坐标")
+            return None
+
         aoi_geom_proj = aoi_geom
 
         # 将 AOI 几何从 EPSG:4326 转换为影像的 CRS
-        if src_crs and src_crs.to_epsg() != 4326:
+        if src_crs.to_epsg() != 4326:
             import geopandas as gpd
-            print(f"[裁剪] 转换 AOI 坐标系: EPSG:4326 → {src_crs}")
+            print(f"  [裁剪] 转换 AOI 坐标系: EPSG:4326 → {src_crs}")
             gdf = gpd.GeoDataFrame(geometry=[aoi_geom], crs="EPSG:4326")
             gdf = gdf.to_crs(src_crs)
             aoi_geom_proj = gdf.geometry.iloc[0]
@@ -154,7 +162,7 @@ def clip_single_scene(
         dst.write(clipped_data)
 
     file_size_mb = output_path.stat().st_size / (1024 * 1024)
-    print(f"[完成] {output_path.name} ({file_size_mb:.1f} MB)")
+    print(f"  [完成] {output_path.name} ({file_size_mb:.1f} MB)")
     print(f"  尺寸: {clipped_data.shape[2]} x {clipped_data.shape[1]} 像素")
 
     return output_path
@@ -207,6 +215,14 @@ def mosaic_and_clip(
     if not scene_paths:
         print("[拼接] 无待拼接文件")
         return None
+
+    # 检查是否有 CRS
+    with rasterio.open(scene_paths[0]) as src:
+        if src.crs is None:
+            print("[拼接] [跳过] 影像没有坐标参考系统（CRS），无法拼接和裁剪")
+            print("[提示] SLC 数据需要先进行地形校正才能裁剪")
+            print("[提示] SLC 数据通常用于 InSAR 分析，InSAR 输出会有正确的地理坐标")
+            return None
 
     print(f"[拼接] 拼接 {len(scene_paths)} 个文件...")
 
@@ -360,6 +376,7 @@ def process_mosaic_clip(
 
     if can_clip_independently:
         results = []
+        skipped = 0
         for tif_file in tif_files:
             # 从文件名生成输出名：去掉后缀，加 _clipped
             out_name = (tif_file.name
@@ -370,6 +387,11 @@ def process_mosaic_clip(
             result = clip_single_scene(tif_file, aoi_geom, output_path)
             if result:
                 results.append(result)
+            else:
+                skipped += 1
+        if skipped > 0:
+            print(f"\n[提示] {skipped} 个影像因缺少 CRS 被跳过")
+            print(f"[提示] SLC 数据请使用 InSAR 分析: python scripts/09_insar_analysis.py")
         return results
     else:
         if len(tif_files) > 1:

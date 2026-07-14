@@ -508,47 +508,60 @@ def run_pipeline(
     # ============================================================
     # Step 8: 多景拼接 + 研究区裁剪
     # ============================================================
+    # Step 8: 拼接 + 裁剪（SLC 数据跳过）
+    # ============================================================
     print("\n" + "-" * 40)
     print("Step 8/9: 拼接 + 裁剪")
     print("-" * 40)
 
-    step8_start = time.time()
-    try:
-        mosaicked_paths = _mosaic_clip_module.process_mosaic_clip(output_dir, min_coverage=min_coverage, scene_ids=selected_scene_ids)
+    # SLC 数据跳过裁剪（斜距坐标，无地理坐标）
+    if satellite == "sentinel1" and s1_product == "slc":
+        print("[跳过] SLC 数据跳过裁剪步骤")
+        print("[提示] SLC 数据用于 InSAR 分析，InSAR 输出会有正确的地理坐标")
+        results["steps"]["mosaic_clip"] = {"status": "skipped", "reason": "s1_slc"}
+    else:
+        step8_start = time.time()
+        try:
+            mosaicked_paths = _mosaic_clip_module.process_mosaic_clip(output_dir, min_coverage=min_coverage, scene_ids=selected_scene_ids)
 
-        step8_time = time.time() - step8_start
-        results["steps"]["mosaic_clip"] = {
-            "status": "success" if mosaicked_paths else "skipped",
-            "output_paths": [str(p) for p in mosaicked_paths] if mosaicked_paths else [],
-            "count": len(mosaicked_paths),
-            "time_sec": round(step8_time, 1),
-        }
-    except Exception as e:
-        print(f"[错误] Step 8 失败: {e}")
-        results["steps"]["mosaic_clip"] = {"status": "error", "error": str(e)}
-        return results
+            step8_time = time.time() - step8_start
+            results["steps"]["mosaic_clip"] = {
+                "status": "success" if mosaicked_paths else "skipped",
+                "output_paths": [str(p) for p in mosaicked_paths] if mosaicked_paths else [],
+                "count": len(mosaicked_paths),
+                "time_sec": round(step8_time, 1),
+            }
+        except Exception as e:
+            print(f"[错误] Step 8 失败: {e}")
+            results["steps"]["mosaic_clip"] = {"status": "error", "error": str(e)}
+            return results
 
     # ============================================================
-    # Step 9: TIF → ZARR 转换
+    # Step 9: TIF → ZARR 转换（SLC 数据跳过）
     # ============================================================
     print("\n" + "-" * 40)
     print("Step 9/9: TIF → ZARR 转换")
     print("-" * 40)
 
-    step9_start = time.time()
-    try:
-        zarr_paths = _zarr_module.convert_all_to_zarr(output_dir)
+    # SLC 数据跳过 ZARR 转换（没有裁剪后的 TIF）
+    if satellite == "sentinel1" and s1_product == "slc":
+        print("[跳过] SLC 数据跳过 ZARR 转换")
+        results["steps"]["zarr_convert"] = {"status": "skipped", "reason": "s1_slc"}
+    else:
+        step9_start = time.time()
+        try:
+            zarr_paths = _zarr_module.convert_all_to_zarr(output_dir)
 
-        step9_time = time.time() - step9_start
-        results["steps"]["zarr_convert"] = {
-            "status": "success",
-            "count": len(zarr_paths),
-            "time_sec": round(step9_time, 1),
-        }
-    except Exception as e:
-        print(f"[错误] Step 9 失败: {e}")
-        results["steps"]["zarr_convert"] = {"status": "error", "error": str(e)}
-        return results
+            step9_time = time.time() - step9_start
+            results["steps"]["zarr_convert"] = {
+                "status": "success",
+                "count": len(zarr_paths),
+                "time_sec": round(step9_time, 1),
+            }
+        except Exception as e:
+            print(f"[错误] Step 9 失败: {e}")
+            results["steps"]["zarr_convert"] = {"status": "error", "error": str(e)}
+            return results
 
     # ============================================================
     # 管线完成
@@ -575,12 +588,28 @@ def run_pipeline(
     print(f"  输出目录: {output_dir}")
     print(f"  原始波段: {output_dir / 'downloads'}")
     print(f"  合成 TIF: {output_dir / 'merged'}")
-    print(f"  去云 TIF: {output_dir / 'cloud_masked'}")
-    print(f"  拼接裁剪: {output_dir / 'mosaicked'}")
-    print(f"  ZARR 数据: {output_dir / 'zarr'}")
+    if satellite != "sentinel1" or s1_product != "slc":
+        print(f"  去云 TIF: {output_dir / 'cloud_masked'}")
+        print(f"  拼接裁剪: {output_dir / 'mosaicked'}")
+        print(f"  ZARR 数据: {output_dir / 'zarr'}")
     print(f"  元数据: {output_dir / 'metadata.json'}")
     print(f"  研究区几何: {output_dir / 'aoi_geometry.json'}")
     print("=" * 60)
+
+    # SLC 数据提示 InSAR 分析
+    if satellite == "sentinel1" and s1_product == "slc":
+        print("\n" + "=" * 60)
+        print("SLC 数据已下载完成！")
+        print("=" * 60)
+        print("SLC 数据用于 InSAR 形变监测，请执行以下命令进行分析：")
+        print(f"  python scripts/09_insar_analysis.py --data-dir {output_dir} --polarization vv")
+        print("\nInSAR 分析将输出：")
+        print("  - 干涉相位图（*_phase.tif）")
+        print("  - 相干性图（*_coherence.tif）")
+        print("  - 形变图（*_deformation.tif）")
+        print("  - 分析报告（*_report.json）")
+        print("=" * 60)
+
     if task_id:
         print(f"\n查看任务详情: python scripts/task_manager.py info {task_id}")
         print(f"列出所有任务: python scripts/task_manager.py list")
