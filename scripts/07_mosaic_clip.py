@@ -306,16 +306,18 @@ def process_mosaic_clip(
     cloud_masked_dir = data_dir / "cloud_masked"
     merged_dir = data_dir / "merged"
 
-    tif_dir = cloud_masked_dir if cloud_masked_dir.exists() else merged_dir
-    if not tif_dir.exists():
-        print(f"[错误] 目录不存在: {tif_dir}")
-        return []
-
-    tif_files = sorted(tif_dir.glob("*_cloudmasked.tif"))
+    # 优先从 cloud_masked 目录读取，如果为空则从 merged 目录读取
+    tif_files = []
+    if cloud_masked_dir.exists():
+        tif_files = sorted(cloud_masked_dir.glob("*_cloudmasked.tif"))
+    if not tif_files and merged_dir.exists():
+        tif_files = sorted(merged_dir.glob("*_cloudmasked.tif"))
     if not tif_files:
-        tif_files = sorted(tif_dir.glob("*_RGB.tif"))
+        tif_files = sorted(merged_dir.glob("*_RGB.tif")) if merged_dir.exists() else []
     if not tif_files:
-        print(f"[错误] 未找到 TIF 文件: {tif_dir}")
+        tif_files = sorted(merged_dir.glob("*_S1_merged.tif")) if merged_dir.exists() else []
+    if not tif_files:
+        print(f"[错误] 未找到 TIF 文件")
         return []
 
     # 过滤：只处理指定的 scene_id

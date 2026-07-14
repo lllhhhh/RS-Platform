@@ -39,6 +39,9 @@ from config.settings import (
     MIN_COVERAGE_RATIO,
     MPC_STAC_API_URL,
     S1_BANDS,
+    S2_ALL_BANDS,
+    S2_BAND_PRESETS,
+    S2_DEFAULT_BANDS,
     SENTINEL1_GRD_COLLECTION,
     SENTINEL1_SLC_COLLECTION,
     SENTINEL2_COLLECTION,
@@ -50,6 +53,124 @@ from utils.coverage import (
     select_optimal_scenes,
 )
 from utils.datav_boundary import get_admin_boundary
+
+
+def select_bands_interactive(satellite: str = "sentinel2") -> list:
+    """
+    交互式选择要下载的波段。
+
+    Args:
+        satellite: 卫星类型（sentinel1 或 sentinel2）
+
+    Returns:
+        list: 选中的波段列表
+    """
+    if satellite == "sentinel1":
+        return ["vv", "vh"]  # S1 固定下载 vv 和 vh
+
+    print("\n" + "=" * 60)
+    print("可用波段列表")
+    print("=" * 60)
+
+    # 显示所有可用波段
+    band_list = list(S2_ALL_BANDS.keys())
+    for i, (band_id, info) in enumerate(S2_ALL_BANDS.items()):
+        print(f"  {i+1:2}. {band_id:<4} - {info['name']:<25} ({info['resolution_m']}m)")
+
+    print("\n" + "-" * 60)
+    print("常用波段组合预设:")
+    for preset_name, bands in S2_BAND_PRESETS.items():
+        print(f"  {preset_name:<15} : {', '.join(bands)}")
+
+    print("\n" + "-" * 60)
+    print("请输入:")
+    print("  - 波段编号（多个用逗号分隔，如 1,2,3,11）")
+    print("  - 预设名称（如 rgb_scl）")
+    print("  - 或直接输入波段名（如 B02,B03,B04,SCL）")
+    print("  - 直接回车使用默认: " + ", ".join(S2_DEFAULT_BANDS))
+
+    while True:
+        try:
+            user_input = input("\n请选择: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\n已取消，使用默认波段")
+            return S2_DEFAULT_BANDS
+
+        if not user_input:
+            print(f"\n使用默认波段: {', '.join(S2_DEFAULT_BANDS)}")
+            return S2_DEFAULT_BANDS
+
+        # 检查是否是预设名称
+        if user_input in S2_BAND_PRESETS:
+            selected = S2_BAND_PRESETS[user_input]
+            print(f"\n已选择预设 '{user_input}': {', '.join(selected)}")
+            return selected
+
+        # 解析输入
+        selected = []
+        for part in user_input.split(","):
+            part = part.strip()
+            if part.isdigit():
+                # 数字索引
+                idx = int(part) - 1
+                if 0 <= idx < len(band_list):
+                    selected.append(band_list[idx])
+                else:
+                    print(f"  [警告] 编号 {part} 超出范围 (1-{len(band_list)})")
+            elif part.upper() in S2_ALL_BANDS:
+                # 波段名
+                selected.append(part.upper())
+            else:
+                print(f"  [警告] 未知波段: {part}")
+
+        if selected:
+            # 去重并保持顺序
+            selected = list(dict.fromkeys(selected))
+            print(f"\n已选择: {', '.join(selected)}")
+            return selected
+        else:
+            print("输入无效，请重新输入")
+
+
+def parse_bands_argument(bands_arg: list, satellite: str = "sentinel2") -> list:
+    """
+    解析命令行波段参数。
+
+    Args:
+        bands_arg: 命令行传入的波段参数列表
+        satellite: 卫星类型
+
+    Returns:
+        list: 解析后的波段列表
+    """
+    if satellite == "sentinel1":
+        return ["vv", "vh"]
+
+    if not bands_arg:
+        return None  # 表示需要交互式选择
+
+    # 检查是否是预设名称
+    if len(bands_arg) == 1 and bands_arg[0].lower() in S2_BAND_PRESETS:
+        preset_name = bands_arg[0].lower()
+        selected = S2_BAND_PRESETS[preset_name]
+        print(f"[波段] 使用预设 '{preset_name}': {', '.join(selected)}")
+        return selected
+
+    # 解析波段列表
+    selected = []
+    for band in bands_arg:
+        band_upper = band.upper()
+        if band_upper in S2_ALL_BANDS:
+            selected.append(band_upper)
+        else:
+            print(f"  [警告] 未知波段: {band}")
+
+    if selected:
+        print(f"[波段] 已选择: {', '.join(selected)}")
+        return selected
+    else:
+        print("[波段] 未识别到有效波段，使用默认波段")
+        return S2_DEFAULT_BANDS
 
 
 def connect_stac_catalog() -> pystac_client.Client:
@@ -182,13 +303,13 @@ def generate_output_filename(item, band_name: str) -> str:
     return f"{scene_id}_{date_str}_{cloud_str}_{band_name}.tif"
 
 
-def extract_signed_urls(items: list, download_dir: Path, aoi_geom=None, satellite: str = "sentinel2") -> dict:
+def extract_signed_urls(items: list, download_dir: Path, aoi_geom=None, satellite: str = "sentinel2", selected_bands: list = None) -> dict:
     """
     从搜索结果中提取各波段的签名下载 URL。
 
     对每个 STAC Item：
     1. 调用 planetary_computer.sign() 获取带签名的资产 URL
-    2. 提取目标波段（S2: B02/B03/B04/SCL，S1: vv/vh）
+    2. 提取目标波段（S2: 用户选择的波段，S1: vv/vh）
     3. 生成 ARIA2 输入文件和元数据
 
     Args:
@@ -196,6 +317,7 @@ def extract_signed_urls(items: list, download_dir: Path, aoi_geom=None, satellit
         download_dir: 下载目录路径
         aoi_geom: 研究区几何对象（用于计算覆盖率）
         satellite: 卫星类型（sentinel1 或 sentinel2）
+        selected_bands: 用户选择的波段列表（仅 S2 有效）
 
     Returns:
         dict: 元数据字典，包含每个 scene 的详细信息
@@ -203,7 +325,13 @@ def extract_signed_urls(items: list, download_dir: Path, aoi_geom=None, satellit
     from utils.coverage import compute_coverage
 
     # 根据卫星类型选择波段配置
-    bands_config = S1_BANDS if satellite == "sentinel1" else BANDS
+    if satellite == "sentinel1":
+        bands_config = S1_BANDS
+    elif selected_bands:
+        # 使用用户选择的波段
+        bands_config = {band: S2_ALL_BANDS[band] for band in selected_bands if band in S2_ALL_BANDS}
+    else:
+        bands_config = BANDS
 
     # 确保下载目录存在
     download_dir.mkdir(parents=True, exist_ok=True)
@@ -405,6 +533,13 @@ def main():
         choices=["grd", "slc"],
         help="Sentinel-1 产品类型: grd (Ground Range Detected) 或 slc (Single Look Complex)，仅 satellite=sentinel1 时生效",
     )
+    parser.add_argument(
+        "--bands",
+        type=str,
+        nargs="+",
+        default=None,
+        help="要下载的波段列表（如 B02 B03 B04 SCL）或预设名称（如 rgb_scl）。仅 Sentinel-2 有效",
+    )
 
     args = parser.parse_args()
     output_dir = Path(args.output)
@@ -435,8 +570,14 @@ def main():
     search_bbox = list(aoi_geom.bounds) if aoi_geom else args.bbox
     if args.satellite == "sentinel1":
         items = search_sentinel1(catalog, search_bbox, args.date, aoi_geom, product=args.s1_product)
+        selected_bands = ["vv", "vh"]
     else:
         items = search_sentinel2(catalog, search_bbox, args.date, args.cloud_cover, aoi_geom)
+        # 波段选择
+        if args.bands:
+            selected_bands = parse_bands_argument(args.bands, args.satellite)
+        else:
+            selected_bands = select_bands_interactive(args.satellite)
 
     if not items:
         print("[STAC] 未找到符合条件的影像，请调整搜索参数")
@@ -454,7 +595,7 @@ def main():
         return
 
     # 6. 提取签名 URL 和元数据（仅处理选中的场景）
-    result = extract_signed_urls(selected_items, output_dir / "downloads", aoi_geom, satellite=args.satellite)
+    result = extract_signed_urls(selected_items, output_dir / "downloads", aoi_geom, satellite=args.satellite, selected_bands=selected_bands)
 
     # 7. 保存场景选择报告
     result["metadata"]["coverage_report"] = report

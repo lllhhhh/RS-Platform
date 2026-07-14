@@ -8,13 +8,14 @@
 |------|------|
 | **多卫星支持** | Sentinel-2 L2A（光学）、Sentinel-1 GRD/SLC（SAR） |
 | **STAC 搜索** | 按区域、日期搜索影像，S2 支持云量过滤 |
+| **波段选择** | S2 支持交互式选择波段或使用预设组合（rgb/false_color/vegetation 等） |
 | **覆盖率计算** | 计算每景影像对研究区的覆盖率，支持单景/多景分析 |
 | **交互式场景选择** | 展示各时相覆盖率/云量，用户手动选择下载目标 |
 | **研究区输入** | 支持 bbox 矩形、SHP 文件、行政区划名称/adcode 四种方式 |
 | **批量下载** | 使用 ARIA2 多连接并行下载，支持断点续传，Token 自动刷新 |
-| **波段合成** | S2: B02+B03+B04→RGB，S1: VV+VH→双通道 |
+| **波段合成** | S2: 用户选择的波段组合，S1: VV+VH→双通道 |
 | **S1 GRD 预处理** | snappy 处理链：轨道文件→辐射定标→斑点滤波→地形校正→dB |
-| **SCL 去云** | 使用场景分类层去除云、云阴影、卷云像素（仅 S2） |
+| **SCL 去云** | 使用场景分类层去除云、云阴影、卷云像素（仅 S2，需要 SCL 波段） |
 | **独立裁剪** | 多景各自全覆盖时独立裁剪，否则拼接后裁剪 |
 | **InSAR 形变监测** | 两幅 SLC 干涉处理，输出形变图、相干性图和分析报告 |
 | **ZARR 转换** | TIF→ZARR 分块存储，前端按需加载 |
@@ -63,13 +64,45 @@
 | 2 | — | 交互式场景/升降轨选择 | ✓ | ✓ | ✓ |
 | 3 | — | URL 签名 | ✓ | — | ✓ |
 | 4 | `02_aria2_download.py` / `eodag_s1_slc.py` | 批量下载 | ARIA2 | **CDSE 直下** | ARIA2 |
-| 5 | `03_band_merge.py` | 波段合成 | vv+vh | vv+vh(SAFE提取) | B02+B03+B04 |
+| 5 | `03_band_merge.py` | 波段合成 | vv+vh | vv+vh(SAFE提取) | 用户选择的波段 |
 | 6 | `08_s1_preprocess.py` | snappy 预处理 | **执行** | 跳过 | 跳过 |
 | 7 | `04_cloud_mask.py` | SCL 去云 | 跳过 | 跳过 | **执行** |
 | 8 | `07_mosaic_clip.py` | 裁剪（独立/拼接） | ✓ | ✓ | ✓ |
 | 9 | `05_tif_to_zarr.py` | TIF→ZARR | ✓ | ✓ | ✓ |
 
 **InSAR 形变监测**（`09_insar_analysis.py`）为独立模块，不集成到常规管线。
+
+### S2 波段选择
+
+Sentinel-2 支持灵活的波段选择，可通过交互式选择或命令行指定：
+
+**可用波段：**
+
+| 分辨率 | 波段 | 名称 | 用途 |
+|--------|------|------|------|
+| 10m | B02 | Blue | 真彩色、水体 |
+| 10m | B03 | Green | 真彩色、植被 |
+| 10m | B04 | Red | 真彩色、土壤 |
+| 10m | B08 | NIR | 植被指数、水体 |
+| 20m | B05-B07 | Vegetation Red Edge | 植被分析 |
+| 20m | B8A | Narrow NIR | 植被、大气 |
+| 20m | B11, B12 | SWIR | 水体、矿物、城市 |
+| 20m | SCL | Scene Classification | 去云、分类 |
+| 60m | B01 | Coastal aerosol | 大气校正 |
+| 60m | B09 | Water vapour | 水汽 |
+
+**常用预设组合：**
+
+| 预设名称 | 波段组合 | 应用场景 |
+|---------|---------|---------|
+| `rgb` | B02, B03, B04 | 真彩色可视化 |
+| `rgb_scl` | B02, B03, B04, SCL | 真彩色 + 去云（默认） |
+| `false_color` | B08, B04, B03 | 假彩色（植被显示为红色） |
+| `agriculture` | B11, B08, B02 | 农业监测 |
+| `urban` | B12, B11, B04 | 城市环境 |
+| `vegetation` | B08, B11, B02 | 植被健康分析 |
+| `water` | B08, B11, B04 | 水体提取 |
+| `all_10m` | B02, B03, B04, B08 | 所有10m波段 |
 
 ## 快速开始
 
@@ -115,6 +148,12 @@ python scripts/06_pipeline.py --bbox 116.0 39.0 117.0 40.0
 python scripts/06_pipeline.py --adcode 110000                   # 行政区划
 python scripts/06_pipeline.py --admin-name "北京市"              # 模糊搜索
 python scripts/06_pipeline.py --auto-select                     # 自动选择最优
+
+# S2 波段选择（支持交互式选择或命令行指定）
+python scripts/06_pipeline.py --bbox 116.0 39.0 117.0 40.0              # 交互式选择波段
+python scripts/06_pipeline.py --bbox 116.0 39.0 117.0 40.0 --bands B02 B03 B04 B08 SCL  # 指定波段
+python scripts/06_pipeline.py --bbox 116.0 39.0 117.0 40.0 --bands false_color          # 使用预设
+python scripts/06_pipeline.py --bbox 116.0 39.0 117.0 40.0 --bands vegetation           # 植被分析
 
 # ==================== Sentinel-1 GRD（SAR 影像）====================
 python scripts/06_pipeline.py --satellite sentinel1 --bbox 116.0 39.0 117.0 40.0

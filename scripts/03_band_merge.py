@@ -51,9 +51,10 @@ def scan_downloaded_bands(downloads_dir: Path) -> dict:
         dict: {scene_id: {band_name: file_path, ...}, ...}
     """
     # 匹配文件名格式的正则表达式
-    # 示例: S2A_MSIL2A_20240115T031111_N0510_R075_T50TLK_20240115T061738_20240115_12.5_B04.tif
+    # S2 示例: S2A_MSIL2A_20240115T031111_N0510_R075_T50TLK_20240115T061738_20240115_12.5_B04.tif
+    # S1 示例: S1A_IW_GRDH_20240101T000000_20240101T000029_051000_062000_0001_20240101_0.0_vv.tif
     pattern = re.compile(
-        r"^(.+)_(\d{8})_([\d.]+)_(B02|B03|B04|SCL)\.tif$"
+        r"^(.+)_(\d{8})_([\d.]+)_(B02|B03|B04|SCL|vv|vh)\.tif$"
     )
 
     # 按 scene_id 分组

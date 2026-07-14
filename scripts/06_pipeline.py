@@ -78,6 +78,7 @@ def run_pipeline(
     auto_select: bool = False,
     satellite: str = "sentinel2",
     s1_product: str = "grd",
+    bands: list = None,
 ) -> dict:
     """
     执行完整的遥感影像处理管线。
@@ -87,9 +88,9 @@ def run_pipeline(
     2. 按日期分析覆盖率，交互式让用户选择要下载的时相（--auto-select 可跳过交互）
     3. 对搜索结果的资产 URL 进行签名（添加 SAS Token）
     4. 使用 ARIA2 批量下载原始波段
-    5. 波段合成（S2: B02+B03+B04→RGB，S1: vv+vh→双通道）
+    5. 波段合成（S2: 用户选择的波段，S1: vv+vh→双通道）
     6. S1 GRD 预处理：轨道文件→定标→滤波→地形校正→dB（仅 Sentinel-1）
-    7. 使用 SCL 去除云像素（仅 Sentinel-2）
+    7. 使用 SCL 去除云像素（仅 Sentinel-2，需要 SCL 波段）
     8. 多景拼接 + 研究区裁剪
     9. 将 TIF 转换为 ZARR 格式
 
@@ -106,6 +107,7 @@ def run_pipeline(
         auto_select: 是否自动选择最优时相（跳过交互，默认 False）
         satellite: 卫星类型（sentinel1 或 sentinel2，默认 sentinel2）
         s1_product: Sentinel-1 产品类型（grd 或 slc，默认 grd，仅 satellite=sentinel1 时生效）
+        bands: 要下载的波段列表（仅 Sentinel-2 有效，为 None 时交互式选择）
 
     Returns:
         dict: 管线执行结果摘要
@@ -300,8 +302,14 @@ def run_pipeline(
             search_bbox = list(aoi_geom.bounds) if aoi_geom else bbox
             if satellite == "sentinel1":
                 items = _search_module.search_sentinel1(catalog, search_bbox, date_range, aoi_geom, product=s1_product)
+                selected_bands = ["vv", "vh"]
             else:
                 items = _search_module.search_sentinel2(catalog, search_bbox, date_range, cloud_cover_max, aoi_geom)
+                # 波段选择
+                if bands:
+                    selected_bands = _search_module.parse_bands_argument(bands, satellite)
+                else:
+                    selected_bands = _search_module.select_bands_interactive(satellite)
 
             if not items:
                 print("[管线] 未找到符合条件的影像，管线终止")
@@ -359,7 +367,7 @@ def run_pipeline(
 
         step3_start = time.time()
         try:
-            result = _search_module.extract_signed_urls(selected_items, output_dir / "downloads", aoi_geom, satellite=satellite)
+            result = _search_module.extract_signed_urls(selected_items, output_dir / "downloads", aoi_geom, satellite=satellite, selected_bands=selected_bands)
             result["metadata"]["coverage_report"] = coverage_report
             _search_module.save_aria2_input_file(result["urls"], output_dir / "urls.txt")
             _search_module.save_metadata_file(result["metadata"], output_dir / "metadata.json")
@@ -671,6 +679,13 @@ def main():
         choices=["grd", "slc"],
         help="Sentinel-1 产品类型: grd 或 slc，仅 satellite=sentinel1 时生效",
     )
+    parser.add_argument(
+        "--bands",
+        type=str,
+        nargs="+",
+        default=None,
+        help="要下载的波段列表（如 B02 B03 B04 SCL）或预设名称（如 rgb_scl）。仅 Sentinel-2 有效",
+    )
 
     args = parser.parse_args()
     output_dir = Path(args.output)
@@ -688,6 +703,7 @@ def main():
         auto_select=args.auto_select,
         satellite=args.satellite,
         s1_product=args.s1_product,
+        bands=args.bands,
     )
 
 

@@ -39,16 +39,50 @@ SENTINEL1_SLC_COLLECTION = "sentinel-1-slc"
 # ============================================================
 # Sentinel-2 波段定义
 # ============================================================
-# 用户只需要 RGB 三波段 + SCL 去云波段
-# B02 = 蓝色波段 (490nm, 10m)
-# B03 = 绿色波段 (560nm, 10m)
-# B04 = 红色波段 (665nm, 10m)
-# SCL = 场景分类层 (20m，用于云检测)
-BANDS = {
-    "B02": {"name": "Blue",  "wavelength_nm": 490, "resolution_m": 10},
+# Sentinel-2 L2A 所有可用波段
+S2_ALL_BANDS = {
+    # 10m 分辨率
+    "B02": {"name": "Blue", "wavelength_nm": 490, "resolution_m": 10},
     "B03": {"name": "Green", "wavelength_nm": 560, "resolution_m": 10},
-    "B04": {"name": "Red",   "wavelength_nm": 665, "resolution_m": 10},
+    "B04": {"name": "Red", "wavelength_nm": 665, "resolution_m": 10},
+    "B08": {"name": "NIR", "wavelength_nm": 842, "resolution_m": 10},
+    # 20m 分辨率
+    "B05": {"name": "Vegetation Red Edge 1", "wavelength_nm": 705, "resolution_m": 20},
+    "B06": {"name": "Vegetation Red Edge 2", "wavelength_nm": 740, "resolution_m": 20},
+    "B07": {"name": "Vegetation Red Edge 3", "wavelength_nm": 783, "resolution_m": 20},
+    "B8A": {"name": "Narrow NIR", "wavelength_nm": 865, "resolution_m": 20},
+    "B11": {"name": "SWIR 1", "wavelength_nm": 1610, "resolution_m": 20},
+    "B12": {"name": "SWIR 2", "wavelength_nm": 2190, "resolution_m": 20},
     "SCL": {"name": "Scene Classification Layer", "resolution_m": 20},
+    # 60m 分辨率
+    "B01": {"name": "Coastal aerosol", "wavelength_nm": 443, "resolution_m": 60},
+    "B09": {"name": "Water vapour", "wavelength_nm": 945, "resolution_m": 60},
+    # 其他产品
+    "AOT": {"name": "Aerosol Optical Thickness", "resolution_m": 10},
+    "WVP": {"name": "Water Vapour", "resolution_m": 10},
+}
+
+# 默认波段组合（RGB + SCL）- 向后兼容
+BANDS = {
+    "B02": S2_ALL_BANDS["B02"],
+    "B03": S2_ALL_BANDS["B03"],
+    "B04": S2_ALL_BANDS["B04"],
+    "SCL": S2_ALL_BANDS["SCL"],
+}
+
+# 默认下载的波段列表
+S2_DEFAULT_BANDS = ["B02", "B03", "B04", "SCL"]
+
+# 常用波段组合预设
+S2_BAND_PRESETS = {
+    "rgb": ["B02", "B03", "B04"],  # 真彩色
+    "rgb_scl": ["B02", "B03", "B04", "SCL"],  # 真彩色 + 去云
+    "false_color": ["B08", "B04", "B03"],  # 假彩色（植被）
+    "agriculture": ["B11", "B08", "B02"],  # 农业
+    "urban": ["B12", "B11", "B04"],  # 城市
+    "vegetation": ["B08", "B11", "B02"],  # 植被分析
+    "water": ["B08", "B11", "B04"],  # 水体分析
+    "all_10m": ["B02", "B03", "B04", "B08"],  # 所有10m波段
 }
 
 # 用于波段合成的 RGB 波段顺序（写入 TIF 的通道顺序）
