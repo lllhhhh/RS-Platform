@@ -63,7 +63,7 @@ _cloud_mask_module = _import_script("04_cloud_mask")
 _zarr_module = _import_script("05_tif_to_zarr")
 _mosaic_clip_module = _import_script("07_mosaic_clip")
 _s1_preprocess_module = _import_script("08_s1_preprocess")
-_eodag_slc_module = _import_script("eodag_s1_slc")
+_cdse_slc_module = _import_script("cdse_s1_slc")
 
 
 def run_pipeline(
@@ -174,21 +174,21 @@ def run_pipeline(
     print("=" * 60)
 
     # ============================================================
-    # S1 SLC: eodag 搜索 + 升降轨选择 + eodag 下载
+    # S1 SLC: CDSE 搜索 + 升降轨选择 + CDSE 下载
     # ============================================================
     if satellite == "sentinel1" and s1_product == "slc":
         print("\n" + "-" * 40)
-        print("Step 1/9: eodag 搜索 S1 SLC IW 产品")
+        print("Step 1/9: CDSE 搜索 S1 SLC IW 产品")
         print("-" * 40)
 
         step1_start = time.time()
         try:
             search_bbox = list(aoi_geom.bounds) if aoi_geom else bbox
-            eodag_products = _eodag_slc_module.search_slc(
+            cdse_products = _cdse_slc_module.search_slc(
                 bbox=search_bbox, date_range=date_range, aoi_geom=aoi_geom
             )
 
-            if not eodag_products:
+            if not cdse_products:
                 print("[管线] 未找到 SLC 产品，管线终止")
                 results["steps"]["search"] = {"status": "no_results", "count": 0}
                 return results
@@ -196,7 +196,7 @@ def run_pipeline(
             step1_time = time.time() - step1_start
             results["steps"]["search"] = {
                 "status": "success",
-                "count": len(eodag_products),
+                "count": len(cdse_products),
                 "time_sec": round(step1_time, 1),
             }
         except Exception as e:
@@ -211,11 +211,11 @@ def run_pipeline(
 
         if auto_select:
             # 自动模式：选择第一个轨道方向的所有场景
-            orbit_dirs = list({p["orbit_direction"] for p in eodag_products})
-            selected_slc = [p for p in eodag_products if p["orbit_direction"] == orbit_dirs[0]]
+            orbit_dirs = list({p["orbit_direction"] for p in cdse_products})
+            selected_slc = [p for p in cdse_products if p["orbit_direction"] == orbit_dirs[0]]
             print(f"[自动选择] {orbit_dirs[0]}，共 {len(selected_slc)} 景")
         else:
-            selected_slc = _eodag_slc_module.select_orbit_direction_interactive(eodag_products)
+            selected_slc = _cdse_slc_module.select_orbit_direction_interactive(cdse_products)
 
         if not selected_slc:
             print("[管线] 未选择任何场景，管线终止")
@@ -226,18 +226,18 @@ def run_pipeline(
             "status": "success",
             "strategy": "orbit_direction",
             "selected_count": len(selected_slc),
-            "total_count": len(eodag_products),
+            "total_count": len(cdse_products),
         }
 
-        # eodag 下载
+        # CDSE 下载
         print("\n" + "-" * 40)
-        print("Step 3-4/9: eodag 下载 SLC 产品")
+        print("Step 3-4/9: CDSE 下载 SLC 产品")
         print("-" * 40)
 
         if not skip_download:
             try:
                 slc_dir = output_dir / "downloads" / "s1_slc"
-                downloaded_slc = _eodag_slc_module.download_slc(selected_slc, slc_dir)
+                downloaded_slc = _cdse_slc_module.download_slc(selected_slc, slc_dir)
 
                 if not downloaded_slc:
                     print("[管线] 下载失败，管线终止")
@@ -251,7 +251,7 @@ def run_pipeline(
                 # 为每个 SAFE 产品提取波段并写入 metadata
                 metadata = {"scenes": [], "generated_at": datetime.now().isoformat(), "satellite": "sentinel1", "s1_product": "slc"}
                 for item in downloaded_slc:
-                    bands = _eodag_slc_module.extract_bands(item["path"])
+                    bands = _cdse_slc_module.extract_bands(item["path"])
                     if bands:
                         scene_meta = {
                             "scene_id": item["scene_id"],
@@ -276,16 +276,16 @@ def run_pipeline(
                     "status": "success",
                     "count": len(downloaded_slc),
                 }
-                results["steps"]["sign_urls"] = {"status": "skipped", "reason": "eodag_slc"}
+                results["steps"]["sign_urls"] = {"status": "skipped", "reason": "cdse_slc"}
             except Exception as e:
-                print(f"[错误] eodag 下载失败: {e}")
+                print(f"[错误] CDSE 下载失败: {e}")
                 results["steps"]["download"] = {"status": "error", "error": str(e)}
                 return results
         else:
             print("\n[管线] 跳过下载步骤（--skip-download）")
             results["steps"]["download"] = {"status": "skipped"}
 
-        selected_scene_ids = None  # eodag 路径不按 scene_ids 过滤
+        selected_scene_ids = None  # CDSE 路径不按 scene_ids 过滤
 
     # ============================================================
     # S1 GRD / S2: MPC STAC 搜索 + ARIA2 下载

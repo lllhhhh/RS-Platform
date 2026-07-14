@@ -60,10 +60,10 @@
 
 | 步骤 | 脚本 | 说明 | S1 GRD | S1 SLC | S2 |
 |------|------|------|:------:|:------:|:--:|
-| 1 | `01_search_and_sign.py` / `eodag_s1_slc.py` | STAC / CDSE 搜索 + 覆盖率计算 | MPC STAC | **CDSE STAC** | MPC STAC |
+| 1 | `01_search_and_sign.py` / `cdse_s1_slc.py` | STAC / CDSE 搜索 + 覆盖率计算 | MPC STAC | **CDSE STAC** | MPC STAC |
 | 2 | — | 交互式场景/升降轨选择 | ✓ | ✓ | ✓ |
 | 3 | — | URL 签名 | ✓ | — | ✓ |
-| 4 | `02_aria2_download.py` / `eodag_s1_slc.py` | 批量下载 | ARIA2 | **CDSE 直下** | ARIA2 |
+| 4 | `02_aria2_download.py` / `cdse_s1_slc.py` | 批量下载 | ARIA2 | **CDSE 直下** | ARIA2 |
 | 5 | `03_band_merge.py` | 波段合成 | vv+vh | vv+vh(SAFE提取) | 用户选择的波段 |
 | 6 | `08_s1_preprocess.py` | snappy 预处理 | **执行** | 跳过 | 跳过 |
 | 7 | `04_cloud_mask.py` | SCL 去云 | 跳过 | 跳过 | **执行** |
@@ -217,7 +217,7 @@ RS-Platform/
 │   ├── 07_mosaic_clip.py        # 多景裁剪（独立/拼接）
 │   ├── 08_s1_preprocess.py      # S1 GRD snappy 预处理
 │   ├── 09_insar_analysis.py     # InSAR 形变监测
-│   └── eodag_s1_slc.py          # CDSE S1 SLC 搜索下载
+│   └── cdse_s1_slc.py          # CDSE S1 SLC 搜索下载
 ├── backend/
 │   ├── main.py                  # FastAPI 入口
 │   ├── routers/imagery.py       # 影像 API 路由

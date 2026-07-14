@@ -1,5 +1,5 @@
 """
-eodag_s1_slc.py - 通过 Copernicus Data Space 搜索和下载 Sentinel-1 SLC 数据
+cdse_s1_slc.py - 通过 Copernicus Data Space 搜索和下载 Sentinel-1 SLC 数据
 
 使用 Copernicus Data Space Ecosystem (CDSE) STAC API 直接搜索下载，
 无需 eodag 依赖。
@@ -14,7 +14,7 @@ eodag_s1_slc.py - 通过 Copernicus Data Space 搜索和下载 Sentinel-1 SLC �
 依赖：requests（已在 requirements.txt 中）
 
 使用方式：
-    from scripts.eodag_s1_slc import search_slc, download_slc, extract_bands
+    from scripts.cdse_s1_slc import search_slc, download_slc, extract_bands
 """
 
 import json

@@ -241,7 +241,7 @@ def merge_all_scenes(data_dir: Path, scene_ids: set = None) -> list:
         satellite = metadata.get("satellite", "sentinel2")
         s1_product = metadata.get("s1_product", "grd")
 
-    # S1 SLC（eodag）：直接从 metadata 读取波段路径
+    # S1 SLC（CDSE）：直接从 metadata 读取波段路径
     if satellite == "sentinel1" and s1_product == "slc" and metadata.get("scenes"):
         print("[波段合成] S1 SLC 模式：从 SAFE 提取的波段合成 vv+vh")
         merged_files = []
