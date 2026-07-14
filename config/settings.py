@@ -32,6 +32,10 @@ DATAV_API_BASE = "https://geo.datav.aliyun.com/areas_v3/bound"
 # Sentinel-2 L2A（Level-2A，大气校正后）集合名称
 SENTINEL2_COLLECTION = "sentinel-2-l2a"
 
+# Sentinel-1 集合名称
+SENTINEL1_GRD_COLLECTION = "sentinel-1-grd"
+SENTINEL1_SLC_COLLECTION = "sentinel-1-slc"
+
 # ============================================================
 # Sentinel-2 波段定义
 # ============================================================
@@ -49,6 +53,18 @@ BANDS = {
 
 # 用于波段合成的 RGB 波段顺序（写入 TIF 的通道顺序）
 RGB_BAND_ORDER = ["B04", "B03", "B02"]  # Red, Green, Blue
+
+# ============================================================
+# Sentinel-1 GRD 波段定义
+# ============================================================
+# SAR 极化通道
+S1_BANDS = {
+    "vv": {"name": "Vertical-Vertical", "polarization": "VV"},
+    "vh": {"name": "Vertical-Horizontal", "polarization": "VH"},
+}
+
+# S1 波段合成顺序（写入 TIF 的通道顺序）
+S1_BAND_ORDER = ["vv", "vh"]
 
 # ============================================================
 # SCL 去云配置

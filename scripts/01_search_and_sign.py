@@ -38,6 +38,9 @@ from config.settings import (
     DOWNLOADS_DIR,
     MIN_COVERAGE_RATIO,
     MPC_STAC_API_URL,
+    S1_BANDS,
+    SENTINEL1_GRD_COLLECTION,
+    SENTINEL1_SLC_COLLECTION,
     SENTINEL2_COLLECTION,
 )
 from utils.coverage import (
@@ -110,6 +113,50 @@ def search_sentinel2(
     return items
 
 
+def search_sentinel1(
+    catalog: pystac_client.Client,
+    bbox: list,
+    date_range: str,
+    aoi_geom=None,
+    product: str = "grd",
+) -> list:
+    """
+    搜索 Sentinel-1 影像（SAR 数据，无云量过滤）。
+
+    Args:
+        catalog: STAC 客户端
+        bbox: 边界框 [min_lon, min_lat, max_lon, max_lat]
+        date_range: 日期范围字符串，如 "2024-01-01/2024-06-30"
+        aoi_geom: 研究区几何对象（Shapely Geometry），用于 intersects 搜索
+        product: 产品类型，"grd" 或 "slc"
+
+    Returns:
+        list: 搜索到的 STAC Item 列表
+    """
+    from shapely.geometry import mapping
+
+    collection = SENTINEL1_SLC_COLLECTION if product == "slc" else SENTINEL1_GRD_COLLECTION
+    product_label = product.upper()
+
+    search_params = {
+        "collections": [collection],
+        "datetime": date_range,
+    }
+
+    if aoi_geom is not None:
+        print(f"[STAC] 搜索 S1 {product_label}: intersects=研究区几何, 日期={date_range}")
+        search_params["intersects"] = mapping(aoi_geom)
+    else:
+        print(f"[STAC] 搜索 S1 {product_label}: bbox={bbox}, 日期={date_range}")
+        search_params["bbox"] = bbox
+
+    search = catalog.search(**search_params)
+
+    items = list(search.items())
+    print(f"[STAC] 共找到 {len(items)} 景 S1 {product_label} 影像")
+    return items
+
+
 def generate_output_filename(item, band_name: str) -> str:
     """
     根据 STAC Item 信息生成标准化的输出文件名。
@@ -135,24 +182,28 @@ def generate_output_filename(item, band_name: str) -> str:
     return f"{scene_id}_{date_str}_{cloud_str}_{band_name}.tif"
 
 
-def extract_signed_urls(items: list, download_dir: Path, aoi_geom=None) -> dict:
+def extract_signed_urls(items: list, download_dir: Path, aoi_geom=None, satellite: str = "sentinel2") -> dict:
     """
     从搜索结果中提取各波段的签名下载 URL。
 
     对每个 STAC Item：
     1. 调用 planetary_computer.sign() 获取带签名的资产 URL
-    2. 提取 B02、B03、B04、SCL 四个波段
+    2. 提取目标波段（S2: B02/B03/B04/SCL，S1: vv/vh）
     3. 生成 ARIA2 输入文件和元数据
 
     Args:
         items: STAC Item 列表
         download_dir: 下载目录路径
         aoi_geom: 研究区几何对象（用于计算覆盖率）
+        satellite: 卫星类型（sentinel1 或 sentinel2）
 
     Returns:
         dict: 元数据字典，包含每个 scene 的详细信息
     """
     from utils.coverage import compute_coverage
+
+    # 根据卫星类型选择波段配置
+    bands_config = S1_BANDS if satellite == "sentinel1" else BANDS
 
     # 确保下载目录存在
     download_dir.mkdir(parents=True, exist_ok=True)
@@ -160,7 +211,7 @@ def extract_signed_urls(items: list, download_dir: Path, aoi_geom=None) -> dict:
     # 存储所有 URL（用于 ARIA2 输入文件）
     all_urls = []
     # 存储元数据（用于后续处理步骤）
-    metadata = {"scenes": [], "generated_at": datetime.now().isoformat()}
+    metadata = {"scenes": [], "generated_at": datetime.now().isoformat(), "satellite": satellite}
 
     for idx, item in enumerate(items):
         print(f"[STAC] 处理第 {idx + 1}/{len(items)} 景: {item.id}")
@@ -181,25 +232,29 @@ def extract_signed_urls(items: list, download_dir: Path, aoi_geom=None) -> dict:
             "bbox": list(item.bbox) if item.bbox else None,
             "coverage_ratio": coverage_ratio,
             "geometry": item.geometry,
+            "satellite": satellite,
             "bands": {},
         }
 
         # 提取每个目标波段的签名 URL
-        for band_name in BANDS.keys():
+        for band_name in bands_config.keys():
             if band_name in signed_item.assets:
                 asset = signed_item.assets[band_name]
                 filename = generate_output_filename(item, band_name)
                 full_path = download_dir / filename
 
-                scene_meta["bands"][band_name] = {
+                band_info = {
                     "url": asset.href,
                     "filename": filename,
                     "local_path": str(full_path),
-                    "resolution_m": BANDS[band_name]["resolution_m"],
                 }
+                # S2 有 resolution_m，S1 没有
+                if "resolution_m" in bands_config[band_name]:
+                    band_info["resolution_m"] = bands_config[band_name]["resolution_m"]
+
+                scene_meta["bands"][band_name] = band_info
 
                 # 添加到 ARIA2 URL 列表
-                # ARIA2 格式: URL\n  out=文件名
                 all_urls.append(f"{asset.href}\n  out={filename}")
             else:
                 print(f"  [警告] {item.id} 缺少波段 {band_name}")
@@ -271,6 +326,14 @@ def main():
   python scripts/01_search_and_sign.py \\
       --admin-name "北京市" \\
       --date "2024-01-01/2024-06-30"
+
+  # Sentinel-1 GRD 影像
+  python scripts/01_search_and_sign.py \\
+      --satellite sentinel1 --bbox 116.0 39.0 117.0 40.0 --date "2024-01-01/2024-06-30"
+
+  # Sentinel-1 SLC 影像 + 行政区划
+  python scripts/01_search_and_sign.py \\
+      --satellite sentinel1 --s1-product slc --adcode 110000 --date "2024-01-01/2024-06-30"
         """,
     )
     parser.add_argument(
@@ -328,6 +391,20 @@ def main():
         action="store_true",
         help="自动选择最优时相（跳过交互选择）",
     )
+    parser.add_argument(
+        "--satellite",
+        type=str,
+        default="sentinel2",
+        choices=["sentinel1", "sentinel2"],
+        help="卫星类型: sentinel1 (SAR) 或 sentinel2 (光学，默认)",
+    )
+    parser.add_argument(
+        "--s1-product",
+        type=str,
+        default="grd",
+        choices=["grd", "slc"],
+        help="Sentinel-1 产品类型: grd (Ground Range Detected) 或 slc (Single Look Complex)，仅 satellite=sentinel1 时生效",
+    )
 
     args = parser.parse_args()
     output_dir = Path(args.output)
@@ -356,7 +433,10 @@ def main():
 
     # 3. 搜索影像（使用 aoi_geom 的 bounds 作为搜索 bbox）
     search_bbox = list(aoi_geom.bounds) if aoi_geom else args.bbox
-    items = search_sentinel2(catalog, search_bbox, args.date, args.cloud_cover, aoi_geom)
+    if args.satellite == "sentinel1":
+        items = search_sentinel1(catalog, search_bbox, args.date, aoi_geom, product=args.s1_product)
+    else:
+        items = search_sentinel2(catalog, search_bbox, args.date, args.cloud_cover, aoi_geom)
 
     if not items:
         print("[STAC] 未找到符合条件的影像，请调整搜索参数")
@@ -374,7 +454,7 @@ def main():
         return
 
     # 6. 提取签名 URL 和元数据（仅处理选中的场景）
-    result = extract_signed_urls(selected_items, output_dir / "downloads", aoi_geom)
+    result = extract_signed_urls(selected_items, output_dir / "downloads", aoi_geom, satellite=args.satellite)
 
     # 7. 保存场景选择报告
     result["metadata"]["coverage_report"] = report

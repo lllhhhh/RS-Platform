@@ -177,12 +177,16 @@ async def trigger_download(request: DownloadRequest, background_tasks: Backgroun
         adcode=request.adcode,
         admin_name=request.admin_name,
         aoi_path=request.aoi_path,
+        satellite=request.satellite,
+        s1_product=request.s1_product,
     )
 
     # 构建响应参数
     params = {
         "date_range": request.date_range,
         "cloud_cover_max": request.cloud_cover_max,
+        "satellite": request.satellite,
+        "s1_product": request.s1_product,
     }
     if request.adcode:
         params["adcode"] = request.adcode

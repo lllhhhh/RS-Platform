@@ -3,7 +3,7 @@
 # ============================================================
 
 # --- 数据获取：MPC STAC API 查询与 URL 签名 ---
-pystac-client>=0.7.0          # STAC API 客户端，用于搜索哨兵2数据
+pystac-client>=0.7.0          # STAC API 客户端，用于搜索 Sentinel-1/2 数据
 planetary-computer>=0.5.0     # MPC URL 签名库，生成带 SAS Token 的下载链接
 
 # --- 栅格数据处理：GeoTIFF 读写与波段操作 ---
@@ -25,3 +25,11 @@ requests>=2.31.0              # HTTP 请求库
 shapely>=2.0.0                # 几何对象处理
 pyproj>=3.6.0                 # 坐标系转换
 geopandas>=0.14.0             # 地理空间数据处理（读取 shp 文件）
+# S1 SLC 下载通过 Copernicus Data Space STAC API（requests + OAuth2），无需额外库
+
+# --- SAR 处理（需单独安装） ---
+# esa_snappy: ESA SNAP 的 Python 绑定，用于 Sentinel-1 SLC/GRD 处理和 InSAR 分析
+# 安装方式：1. 下载安装 ESA SNAP Desktop (https://step.esa.int/)
+#           2. pip install esa-snappy（conda: conda install -c conda-forge esa_snappy）
+#           3. 设置 JAVA_HOME 环境变量指向 SNAP 自带的 JRE（如 D:\esa-snap\jre）
+# 代码中使用: from esa_snappy import ProductIO, GPF, HashMap

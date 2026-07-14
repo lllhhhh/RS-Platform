@@ -34,7 +34,7 @@ from backend.routers import imagery
 # 创建 FastAPI 应用实例
 app = FastAPI(
     title="RS-Platform API",
-    description="遥感影像处理系统 API - 提供 Sentinel-2 影像的下载、处理和展示服务",
+    description="遥感影像处理系统 API - 提供 Sentinel-1/2 影像的下载、处理和展示服务",
     version="1.0.0",
     docs_url="/docs",      # Swagger UI 地址
     redoc_url="/redoc",    # ReDoc 地址

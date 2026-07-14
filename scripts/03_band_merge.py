@@ -33,6 +33,7 @@ from config.settings import (
     DOWNLOADS_DIR,
     MERGED_DIR,
     RGB_BAND_ORDER,
+    S1_BAND_ORDER,
 )
 
 
@@ -152,6 +153,65 @@ def merge_rgb_bands(
     return output_path
 
 
+def merge_s1_bands(
+    scene_id: str,
+    band_files: dict,
+    output_dir: Path,
+) -> Path:
+    """
+    将 Sentinel-1 GRD 的 vv 和 vh 两个极化通道合成为双通道 TIF。
+
+    Args:
+        scene_id: 场景 ID
+        band_files: 波段文件信息字典
+        output_dir: 输出目录
+
+    Returns:
+        Path: 合成后的 TIF 文件路径，如果缺少波段则返回 None
+    """
+    missing_bands = [b for b in S1_BAND_ORDER if b not in band_files]
+    if missing_bands:
+        print(f"  [跳过] {scene_id}: 缺少极化通道 {missing_bands}")
+        return None
+
+    first_band = list(band_files.values())[0]
+    date = first_band["date"]
+    cloud_cover = first_band.get("cloud_cover", "0.0")
+
+    output_filename = f"{scene_id}_{date}_{cloud_cover}_S1_merged.tif"
+    output_path = output_dir / output_filename
+
+    if output_path.exists():
+        print(f"  [跳过] {output_filename} 已存在")
+        return output_path
+
+    print(f"  [合成] {scene_id}: 合成 vv+vh 极化通道...")
+
+    # 以 vv 通道为基准读取空间参考信息
+    with rasterio.open(band_files["vv"]["path"]) as src:
+        profile = src.profile.copy()
+        vv_data = src.read(1)
+        height, width = vv_data.shape
+
+    with rasterio.open(band_files["vh"]["path"]) as src:
+        vh_data = src.read(1)
+
+    if vh_data.shape != (height, width):
+        print(f"  [错误] {scene_id}: vv 和 vh 尺寸不一致")
+        return None
+
+    profile.update(count=2)
+
+    with rasterio.open(output_path, "w", **profile) as dst:
+        dst.write(vv_data, 1)  # VV
+        dst.write(vh_data, 2)  # VH
+
+    file_size_mb = output_path.stat().st_size / (1024 * 1024)
+    print(f"  [完成] {output_filename} ({file_size_mb:.1f} MB)")
+
+    return output_path
+
+
 def merge_all_scenes(data_dir: Path, scene_ids: set = None) -> list:
     """
     对已下载场景执行波段合成。
@@ -169,7 +229,48 @@ def merge_all_scenes(data_dir: Path, scene_ids: set = None) -> list:
     # 确保输出目录存在
     merged_dir.mkdir(parents=True, exist_ok=True)
 
-    # 扫描已下载的波段
+    # 读取 metadata 确定卫星类型
+    metadata_path = data_dir / "metadata.json"
+    metadata = {}
+    satellite = "sentinel2"
+    s1_product = "grd"
+    if metadata_path.exists():
+        with open(metadata_path, "r", encoding="utf-8") as f:
+            metadata = json.load(f)
+        satellite = metadata.get("satellite", "sentinel2")
+        s1_product = metadata.get("s1_product", "grd")
+
+    # S1 SLC（eodag）：直接从 metadata 读取波段路径
+    if satellite == "sentinel1" and s1_product == "slc" and metadata.get("scenes"):
+        print("[波段合成] S1 SLC 模式：从 SAFE 提取的波段合成 vv+vh")
+        merged_files = []
+        for scene in metadata["scenes"]:
+            scene_id = scene["scene_id"]
+            bands_info = scene.get("bands", {})
+
+            # 检查 vv 和 vh 是否都存在
+            band_files = {}
+            for pol_name in S1_BAND_ORDER:
+                if pol_name in bands_info:
+                    local_path = Path(bands_info[pol_name]["local_path"])
+                    if local_path.exists():
+                        band_files[pol_name] = {
+                            "path": local_path,
+                            "date": scene.get("date", ""),
+                            "cloud_cover": "0.0",
+                        }
+
+            if len(band_files) == len(S1_BAND_ORDER):
+                result = merge_s1_bands(scene_id, band_files, merged_dir)
+                if result:
+                    merged_files.append(result)
+            else:
+                print(f"  [跳过] {scene_id}: 缺少波段 {set(S1_BAND_ORDER) - set(band_files)}")
+
+        print(f"\n[波段合成] 完成！共合成 {len(merged_files)}/{len(metadata['scenes'])} 个场景")
+        return merged_files
+
+    # S1 GRD / S2：扫描 downloads 目录
     scenes = scan_downloaded_bands(downloads_dir)
 
     if not scenes:
@@ -182,10 +283,17 @@ def merge_all_scenes(data_dir: Path, scene_ids: set = None) -> list:
         scenes = {sid: bands for sid, bands in scenes.items() if sid in scene_ids}
         print(f"[波段合成] 过滤后保留 {len(scenes)} 个场景")
 
+    # 根据卫星类型选择合成函数
+    if satellite == "sentinel1":
+        print("[波段合成] Sentinel-1 GRD 模式：合成 vv+vh")
+        merge_func = merge_s1_bands
+    else:
+        merge_func = merge_rgb_bands
+
     # 对每个场景执行合成
     merged_files = []
     for scene_id, band_files in scenes.items():
-        result = merge_rgb_bands(scene_id, band_files, merged_dir)
+        result = merge_func(scene_id, band_files, merged_dir)
         if result:
             merged_files.append(result)
 

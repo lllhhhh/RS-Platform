@@ -61,6 +61,8 @@ _merge_module = _import_script("03_band_merge")
 _cloud_mask_module = _import_script("04_cloud_mask")
 _zarr_module = _import_script("05_tif_to_zarr")
 _mosaic_clip_module = _import_script("07_mosaic_clip")
+_s1_preprocess_module = _import_script("08_s1_preprocess")
+_eodag_slc_module = _import_script("eodag_s1_slc")
 
 
 def run_pipeline(
@@ -74,19 +76,22 @@ def run_pipeline(
     admin_name: str = None,
     min_coverage: float = None,
     auto_select: bool = False,
+    satellite: str = "sentinel2",
+    s1_product: str = "grd",
 ) -> dict:
     """
     执行完整的遥感影像处理管线。
 
-    管线流程：
-    1. 搜索 MPC STAC API，获取符合条件的 Sentinel-2 L2A 影像（含覆盖率计算）
+    管线流程（9 步）：
+    1. 搜索 MPC STAC API，获取符合条件的影像（含覆盖率计算）
     2. 按日期分析覆盖率，交互式让用户选择要下载的时相（--auto-select 可跳过交互）
     3. 对搜索结果的资产 URL 进行签名（添加 SAS Token）
-    4. 使用 ARIA2 批量下载原始波段（B02、B03、B04、SCL）
-    5. 将单波段合成为 RGB 三通道 TIF
-    6. 使用 SCL 去除云、云阴影、卷云像素
-    7. 多景拼接 + 研究区裁剪
-    8. 将去云后的 TIF 转换为 ZARR 格式
+    4. 使用 ARIA2 批量下载原始波段
+    5. 波段合成（S2: B02+B03+B04→RGB，S1: vv+vh→双通道）
+    6. S1 GRD 预处理：轨道文件→定标→滤波→地形校正→dB（仅 Sentinel-1）
+    7. 使用 SCL 去除云像素（仅 Sentinel-2）
+    8. 多景拼接 + 研究区裁剪
+    9. 将 TIF 转换为 ZARR 格式
 
     Args:
         bbox: 搜索区域边界框 [min_lon, min_lat, max_lon, max_lat]
@@ -99,6 +104,8 @@ def run_pipeline(
         admin_name: 行政区划名称（如 北京市）
         min_coverage: 最低覆盖率阈值
         auto_select: 是否自动选择最优时相（跳过交互，默认 False）
+        satellite: 卫星类型（sentinel1 或 sentinel2，默认 sentinel2）
+        s1_product: Sentinel-1 产品类型（grd 或 slc，默认 grd，仅 satellite=sentinel1 时生效）
 
     Returns:
         dict: 管线执行结果摘要
@@ -157,138 +164,251 @@ def run_pipeline(
     print("=" * 60)
     print(f"搜索区域: {search_area_desc}")
     print(f"日期范围: {date_range}")
-    print(f"最大云量: {cloud_cover_max}%")
+    if satellite != "sentinel1":
+        print(f"最大云量: {cloud_cover_max}%")
     print(f"最低覆盖率: {min_coverage*100:.0f}%")
     print(f"输出目录: {output_dir}")
     print("=" * 60)
 
     # ============================================================
-    # Step 1: STAC 搜索与覆盖率计算
+    # S1 SLC: eodag 搜索 + 升降轨选择 + eodag 下载
     # ============================================================
-    print("\n" + "-" * 40)
-    print("Step 1/8: STAC 搜索与覆盖率计算")
-    print("-" * 40)
+    if satellite == "sentinel1" and s1_product == "slc":
+        print("\n" + "-" * 40)
+        print("Step 1/9: eodag 搜索 S1 SLC IW 产品")
+        print("-" * 40)
 
-    step1_start = time.time()
-    try:
-        catalog = _search_module.connect_stac_catalog()
-        # 使用 aoi_geom 的 bounds 作为搜索 bbox（当使用行政区划或 SHP 时）
-        search_bbox = list(aoi_geom.bounds) if aoi_geom else bbox
-        items = _search_module.search_sentinel2(catalog, search_bbox, date_range, cloud_cover_max, aoi_geom)
+        step1_start = time.time()
+        try:
+            search_bbox = list(aoi_geom.bounds) if aoi_geom else bbox
+            eodag_products = _eodag_slc_module.search_slc(
+                bbox=search_bbox, date_range=date_range, aoi_geom=aoi_geom
+            )
 
-        if not items:
-            print("[管线] 未找到符合条件的影像，管线终止")
-            results["steps"]["search"] = {"status": "no_results", "count": 0}
+            if not eodag_products:
+                print("[管线] 未找到 SLC 产品，管线终止")
+                results["steps"]["search"] = {"status": "no_results", "count": 0}
+                return results
+
+            step1_time = time.time() - step1_start
+            results["steps"]["search"] = {
+                "status": "success",
+                "count": len(eodag_products),
+                "time_sec": round(step1_time, 1),
+            }
+        except Exception as e:
+            print(f"[错误] Step 1 失败: {e}")
+            results["steps"]["search"] = {"status": "error", "error": str(e)}
             return results
 
-        items = enrich_items_with_coverage(items, aoi_geom)
+        # 升降轨选择
+        print("\n" + "-" * 40)
+        print("Step 2/9: 升降轨选择")
+        print("-" * 40)
 
-        step1_time = time.time() - step1_start
-        results["steps"]["search"] = {
-            "status": "success",
-            "count": len(items),
-            "time_sec": round(step1_time, 1),
-        }
-    except Exception as e:
-        print(f"[错误] Step 1 失败: {e}")
-        results["steps"]["search"] = {"status": "error", "error": str(e)}
-        return results
+        if auto_select:
+            # 自动模式：选择第一个轨道方向的所有场景
+            orbit_dirs = list({p["orbit_direction"] for p in eodag_products})
+            selected_slc = [p for p in eodag_products if p["orbit_direction"] == orbit_dirs[0]]
+            print(f"[自动选择] {orbit_dirs[0]}，共 {len(selected_slc)} 景")
+        else:
+            selected_slc = _eodag_slc_module.select_orbit_direction_interactive(eodag_products)
 
-    # ============================================================
-    # Step 2: 场景选择
-    # ============================================================
-    print("\n" + "-" * 40)
-    print("Step 2/8: 场景选择")
-    print("-" * 40)
-
-    step2_start = time.time()
-    try:
-        selected_items, coverage_report = select_optimal_scenes(items, aoi_geom, min_coverage, auto_select=auto_select)
-        print_coverage_report(coverage_report)
-
-        if not selected_items:
-            print("[管线] 无法选择满足覆盖率要求的场景组合，管线终止")
+        if not selected_slc:
+            print("[管线] 未选择任何场景，管线终止")
             results["steps"]["scene_selection"] = {"status": "no_selection"}
             return results
 
-        step2_time = time.time() - step2_start
         results["steps"]["scene_selection"] = {
             "status": "success",
-            "strategy": coverage_report.get("strategy"),
-            "selected_count": len(selected_items),
-            "total_count": len(items),
-            "coverage": coverage_report.get("coverage"),
-            "time_sec": round(step2_time, 1),
+            "strategy": "orbit_direction",
+            "selected_count": len(selected_slc),
+            "total_count": len(eodag_products),
         }
 
-        # 提取选中场景的 ID，后续步骤只处理这些场景
-        selected_scene_ids = {item.id for item in selected_items}
-    except Exception as e:
-        print(f"[错误] Step 2 失败: {e}")
-        results["steps"]["scene_selection"] = {"status": "error", "error": str(e)}
-        return results
-
-    # ============================================================
-    # Step 3: URL 签名
-    # ============================================================
-    print("\n" + "-" * 40)
-    print("Step 3/8: URL 签名")
-    print("-" * 40)
-
-    step3_start = time.time()
-    try:
-        result = _search_module.extract_signed_urls(selected_items, output_dir / "downloads", aoi_geom)
-        result["metadata"]["coverage_report"] = coverage_report
-        _search_module.save_aria2_input_file(result["urls"], output_dir / "urls.txt")
-        _search_module.save_metadata_file(result["metadata"], output_dir / "metadata.json")
-
-        step3_time = time.time() - step3_start
-        results["steps"]["sign_urls"] = {
-            "status": "success",
-            "count": len(selected_items),
-            "time_sec": round(step3_time, 1),
-        }
-    except Exception as e:
-        print(f"[错误] Step 3 失败: {e}")
-        results["steps"]["sign_urls"] = {"status": "error", "error": str(e)}
-        return results
-
-    # ============================================================
-    # Step 4: ARIA2 批量下载
-    # ============================================================
-    if not skip_download:
+        # eodag 下载
         print("\n" + "-" * 40)
-        print("Step 4/8: ARIA2 批量下载")
+        print("Step 3-4/9: eodag 下载 SLC 产品")
         print("-" * 40)
 
-        step4_start = time.time()
-        try:
-            downloader = _download_module.Aria2Downloader(
-                data_dir=output_dir,
-                aria2_path=Path(__file__).resolve().parent.parent
-                / "aria2-1.37.0-win-64bit-build1"
-                / "aria2c.exe",
-            )
-            downloader.start()
+        if not skip_download:
+            try:
+                slc_dir = output_dir / "downloads" / "s1_slc"
+                downloaded_slc = _eodag_slc_module.download_slc(selected_slc, slc_dir)
 
-            step4_time = time.time() - step4_start
-            results["steps"]["download"] = {
+                if not downloaded_slc:
+                    print("[管线] 下载失败，管线终止")
+                    results["steps"]["download"] = {"status": "failed"}
+                    return results
+
+                # 从 SAFE 目录提取 VV/VH 波段到 downloads/
+                download_dir = output_dir / "downloads"
+                download_dir.mkdir(parents=True, exist_ok=True)
+
+                # 为每个 SAFE 产品提取波段并写入 metadata
+                metadata = {"scenes": [], "generated_at": datetime.now().isoformat(), "satellite": "sentinel1", "s1_product": "slc"}
+                for item in downloaded_slc:
+                    bands = _eodag_slc_module.extract_bands(item["path"])
+                    if bands:
+                        scene_meta = {
+                            "scene_id": item["scene_id"],
+                            "datetime": item.get("date", ""),
+                            "date": item.get("date", ""),
+                            "cloud_cover": 0,
+                            "orbit_direction": item["orbit_direction"],
+                            "satellite": "sentinel1",
+                            "bands": {},
+                        }
+                        for pol_name, tif_path in bands.items():
+                            scene_meta["bands"][pol_name] = {
+                                "url": "",
+                                "filename": tif_path.name,
+                                "local_path": str(tif_path),
+                            }
+                        metadata["scenes"].append(scene_meta)
+
+                _search_module.save_metadata_file(metadata, output_dir / "metadata.json")
+
+                results["steps"]["download"] = {
+                    "status": "success",
+                    "count": len(downloaded_slc),
+                }
+                results["steps"]["sign_urls"] = {"status": "skipped", "reason": "eodag_slc"}
+            except Exception as e:
+                print(f"[错误] eodag 下载失败: {e}")
+                results["steps"]["download"] = {"status": "error", "error": str(e)}
+                return results
+        else:
+            print("\n[管线] 跳过下载步骤（--skip-download）")
+            results["steps"]["download"] = {"status": "skipped"}
+
+        selected_scene_ids = None  # eodag 路径不按 scene_ids 过滤
+
+    # ============================================================
+    # S1 GRD / S2: MPC STAC 搜索 + ARIA2 下载
+    # ============================================================
+    else:
+        # Step 1: STAC 搜索
+        print("\n" + "-" * 40)
+        sat_label = "Sentinel-1 GRD" if satellite == "sentinel1" else "Sentinel-2 L2A"
+        print(f"Step 1/9: STAC 搜索与覆盖率计算 ({sat_label})")
+        print("-" * 40)
+
+        step1_start = time.time()
+        try:
+            catalog = _search_module.connect_stac_catalog()
+            search_bbox = list(aoi_geom.bounds) if aoi_geom else bbox
+            if satellite == "sentinel1":
+                items = _search_module.search_sentinel1(catalog, search_bbox, date_range, aoi_geom, product=s1_product)
+            else:
+                items = _search_module.search_sentinel2(catalog, search_bbox, date_range, cloud_cover_max, aoi_geom)
+
+            if not items:
+                print("[管线] 未找到符合条件的影像，管线终止")
+                results["steps"]["search"] = {"status": "no_results", "count": 0}
+                return results
+
+            items = enrich_items_with_coverage(items, aoi_geom)
+
+            step1_time = time.time() - step1_start
+            results["steps"]["search"] = {
                 "status": "success",
-                "time_sec": round(step4_time, 1),
+                "count": len(items),
+                "time_sec": round(step1_time, 1),
             }
         except Exception as e:
-            print(f"[错误] Step 4 失败: {e}")
-            results["steps"]["download"] = {"status": "error", "error": str(e)}
+            print(f"[错误] Step 1 失败: {e}")
+            results["steps"]["search"] = {"status": "error", "error": str(e)}
             return results
-    else:
-        print("\n[管线] 跳过下载步骤（--skip-download）")
-        results["steps"]["download"] = {"status": "skipped"}
+
+        # Step 2: 场景选择
+        print("\n" + "-" * 40)
+        print("Step 2/9: 场景选择")
+        print("-" * 40)
+
+        step2_start = time.time()
+        try:
+            selected_items, coverage_report = select_optimal_scenes(items, aoi_geom, min_coverage, auto_select=auto_select)
+            print_coverage_report(coverage_report)
+
+            if not selected_items:
+                print("[管线] 无法选择满足覆盖率要求的场景组合，管线终止")
+                results["steps"]["scene_selection"] = {"status": "no_selection"}
+                return results
+
+            step2_time = time.time() - step2_start
+            results["steps"]["scene_selection"] = {
+                "status": "success",
+                "strategy": coverage_report.get("strategy"),
+                "selected_count": len(selected_items),
+                "total_count": len(items),
+                "coverage": coverage_report.get("coverage"),
+                "time_sec": round(step2_time, 1),
+            }
+
+            selected_scene_ids = {item.id for item in selected_items}
+        except Exception as e:
+            print(f"[错误] Step 2 失败: {e}")
+            results["steps"]["scene_selection"] = {"status": "error", "error": str(e)}
+            return results
+
+        # Step 3: URL 签名
+        print("\n" + "-" * 40)
+        print("Step 3/9: URL 签名")
+        print("-" * 40)
+
+        step3_start = time.time()
+        try:
+            result = _search_module.extract_signed_urls(selected_items, output_dir / "downloads", aoi_geom, satellite=satellite)
+            result["metadata"]["coverage_report"] = coverage_report
+            _search_module.save_aria2_input_file(result["urls"], output_dir / "urls.txt")
+            _search_module.save_metadata_file(result["metadata"], output_dir / "metadata.json")
+
+            step3_time = time.time() - step3_start
+            results["steps"]["sign_urls"] = {
+                "status": "success",
+                "count": len(selected_items),
+                "time_sec": round(step3_time, 1),
+            }
+        except Exception as e:
+            print(f"[错误] Step 3 失败: {e}")
+            results["steps"]["sign_urls"] = {"status": "error", "error": str(e)}
+            return results
+
+        # Step 4: ARIA2 下载
+        if not skip_download:
+            print("\n" + "-" * 40)
+            print("Step 4/9: ARIA2 批量下载")
+            print("-" * 40)
+
+            step4_start = time.time()
+            try:
+                downloader = _download_module.Aria2Downloader(
+                    data_dir=output_dir,
+                    aria2_path=Path(__file__).resolve().parent.parent
+                    / "aria2-1.37.0-win-64bit-build1"
+                    / "aria2c.exe",
+                )
+                downloader.start()
+
+                step4_time = time.time() - step4_start
+                results["steps"]["download"] = {
+                    "status": "success",
+                    "time_sec": round(step4_time, 1),
+                }
+            except Exception as e:
+                print(f"[错误] Step 4 失败: {e}")
+                results["steps"]["download"] = {"status": "error", "error": str(e)}
+                return results
+        else:
+            print("\n[管线] 跳过下载步骤（--skip-download）")
+            results["steps"]["download"] = {"status": "skipped"}
 
     # ============================================================
     # Step 5: 波段合成
     # ============================================================
     print("\n" + "-" * 40)
-    print("Step 5/8: 波段合成")
+    print("Step 5/9: 波段合成")
     print("-" * 40)
 
     step5_start = time.time()
@@ -307,69 +427,101 @@ def run_pipeline(
         return results
 
     # ============================================================
-    # Step 6: SCL 去云处理
+    # Step 6: S1 GRD 预处理（snappy）
+    # ============================================================
+    if satellite == "sentinel1" and s1_product == "grd":
+        print("\n" + "-" * 40)
+        print("Step 6/9: S1 GRD 预处理（轨道文件→定标→滤波→地形校正→dB）")
+        print("-" * 40)
+
+        step6_start = time.time()
+        try:
+            s1_processed = _s1_preprocess_module.preprocess_s1_scenes(output_dir, scene_ids=selected_scene_ids)
+
+            step6_time = time.time() - step6_start
+            results["steps"]["s1_preprocess"] = {
+                "status": "success" if s1_processed else "skipped",
+                "count": len(s1_processed),
+                "time_sec": round(step6_time, 1),
+            }
+        except Exception as e:
+            print(f"[错误] Step 6 失败: {e}")
+            results["steps"]["s1_preprocess"] = {"status": "error", "error": str(e)}
+            return results
+    else:
+        skip_reason = "sentinel2" if satellite != "sentinel1" else "s1_slc"
+        results["steps"]["s1_preprocess"] = {"status": "skipped", "reason": skip_reason}
+
+    # ============================================================
+    # Step 7: SCL 去云处理
+    # ============================================================
+    if satellite == "sentinel1":
+        print("\n" + "-" * 40)
+        print("Step 7/9: SCL 去云处理（SAR 数据跳过）")
+        print("-" * 40)
+        results["steps"]["cloud_mask"] = {"status": "skipped", "reason": "sentinel1"}
+    else:
+        print("\n" + "-" * 40)
+        print("Step 7/9: SCL 去云处理")
+        print("-" * 40)
+
+        step6_start = time.time()
+        try:
+            masked_files = _cloud_mask_module.process_all_merged_scenes(output_dir, scene_ids=selected_scene_ids)
+
+            step7_time = time.time() - step7_start
+            results["steps"]["cloud_mask"] = {
+                "status": "success",
+                "count": len(masked_files),
+                "time_sec": round(step7_time, 1),
+            }
+        except Exception as e:
+            print(f"[错误] Step 7 失败: {e}")
+            results["steps"]["cloud_mask"] = {"status": "error", "error": str(e)}
+            return results
+
+    # ============================================================
+    # Step 8: 多景拼接 + 研究区裁剪
     # ============================================================
     print("\n" + "-" * 40)
-    print("Step 6/8: SCL 去云处理")
-    print("-" * 40)
-
-    step6_start = time.time()
-    try:
-        masked_files = _cloud_mask_module.process_all_merged_scenes(output_dir, scene_ids=selected_scene_ids)
-
-        step6_time = time.time() - step6_start
-        results["steps"]["cloud_mask"] = {
-            "status": "success",
-            "count": len(masked_files),
-            "time_sec": round(step6_time, 1),
-        }
-    except Exception as e:
-        print(f"[错误] Step 6 失败: {e}")
-        results["steps"]["cloud_mask"] = {"status": "error", "error": str(e)}
-        return results
-
-    # ============================================================
-    # Step 7: 多景拼接 + 研究区裁剪
-    # ============================================================
-    print("\n" + "-" * 40)
-    print("Step 7/8: 拼接 + 裁剪")
-    print("-" * 40)
-
-    step7_start = time.time()
-    try:
-        mosaicked_paths = _mosaic_clip_module.process_mosaic_clip(output_dir, min_coverage=min_coverage, scene_ids=selected_scene_ids)
-
-        step7_time = time.time() - step7_start
-        results["steps"]["mosaic_clip"] = {
-            "status": "success" if mosaicked_paths else "skipped",
-            "output_paths": [str(p) for p in mosaicked_paths] if mosaicked_paths else [],
-            "count": len(mosaicked_paths),
-            "time_sec": round(step7_time, 1),
-        }
-    except Exception as e:
-        print(f"[错误] Step 7 失败: {e}")
-        results["steps"]["mosaic_clip"] = {"status": "error", "error": str(e)}
-        return results
-
-    # ============================================================
-    # Step 8: TIF → ZARR 转换
-    # ============================================================
-    print("\n" + "-" * 40)
-    print("Step 8/8: TIF → ZARR 转换")
+    print("Step 8/9: 拼接 + 裁剪")
     print("-" * 40)
 
     step8_start = time.time()
     try:
-        zarr_paths = _zarr_module.convert_all_to_zarr(output_dir)
+        mosaicked_paths = _mosaic_clip_module.process_mosaic_clip(output_dir, min_coverage=min_coverage, scene_ids=selected_scene_ids)
 
         step8_time = time.time() - step8_start
-        results["steps"]["zarr_convert"] = {
-            "status": "success",
-            "count": len(zarr_paths),
+        results["steps"]["mosaic_clip"] = {
+            "status": "success" if mosaicked_paths else "skipped",
+            "output_paths": [str(p) for p in mosaicked_paths] if mosaicked_paths else [],
+            "count": len(mosaicked_paths),
             "time_sec": round(step8_time, 1),
         }
     except Exception as e:
         print(f"[错误] Step 8 失败: {e}")
+        results["steps"]["mosaic_clip"] = {"status": "error", "error": str(e)}
+        return results
+
+    # ============================================================
+    # Step 9: TIF → ZARR 转换
+    # ============================================================
+    print("\n" + "-" * 40)
+    print("Step 9/9: TIF → ZARR 转换")
+    print("-" * 40)
+
+    step9_start = time.time()
+    try:
+        zarr_paths = _zarr_module.convert_all_to_zarr(output_dir)
+
+        step9_time = time.time() - step9_start
+        results["steps"]["zarr_convert"] = {
+            "status": "success",
+            "count": len(zarr_paths),
+            "time_sec": round(step9_time, 1),
+        }
+    except Exception as e:
+        print(f"[错误] Step 9 失败: {e}")
         results["steps"]["zarr_convert"] = {"status": "error", "error": str(e)}
         return results
 
@@ -435,6 +587,14 @@ def main():
 
   # 自动选择最优时相（跳过交互选择）
   python scripts/06_pipeline.py --auto-select
+
+  # 下载 Sentinel-1 GRD 影像（SAR 数据，无云量过滤）
+  python scripts/06_pipeline.py --satellite sentinel1 --bbox 116.0 39.0 117.0 40.0
+  python scripts/06_pipeline.py --satellite sentinel1 --adcode 110000
+  python scripts/06_pipeline.py --satellite sentinel1 --admin-name "北京市"
+
+  # 下载 Sentinel-1 SLC 影像
+  python scripts/06_pipeline.py --satellite sentinel1 --s1-product slc --bbox 116.0 39.0 117.0 40.0
         """,
     )
     parser.add_argument(
@@ -497,6 +657,20 @@ def main():
         action="store_true",
         help="自动选择最优时相（跳过交互选择）",
     )
+    parser.add_argument(
+        "--satellite",
+        type=str,
+        default="sentinel2",
+        choices=["sentinel1", "sentinel2"],
+        help="卫星类型: sentinel1 (SAR) 或 sentinel2 (光学，默认)",
+    )
+    parser.add_argument(
+        "--s1-product",
+        type=str,
+        default="grd",
+        choices=["grd", "slc"],
+        help="Sentinel-1 产品类型: grd 或 slc，仅 satellite=sentinel1 时生效",
+    )
 
     args = parser.parse_args()
     output_dir = Path(args.output)
@@ -512,6 +686,8 @@ def main():
         admin_name=args.admin_name,
         min_coverage=args.min_coverage,
         auto_select=args.auto_select,
+        satellite=args.satellite,
+        s1_product=args.s1_product,
     )
 
 

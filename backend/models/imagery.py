@@ -84,9 +84,19 @@ class DownloadRequest(BaseModel):
     )
     cloud_cover_max: int = Field(
         default=20,
-        description="最大云量百分比",
+        description="最大云量百分比（Sentinel-1 时忽略此参数）",
         ge=0,
         le=100,
+    )
+    satellite: str = Field(
+        default="sentinel2",
+        description="卫星类型: sentinel1 (SAR) 或 sentinel2 (光学)",
+        pattern="^sentinel[12]$",
+    )
+    s1_product: str = Field(
+        default="grd",
+        description="Sentinel-1 产品类型: grd 或 slc，仅 satellite=sentinel1 时生效",
+        pattern="^(grd|slc)$",
     )
 
 
