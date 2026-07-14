@@ -40,9 +40,6 @@ from config.settings import (
     MIN_COVERAGE_RATIO,
 )
 
-# 导入任务管理模块
-_task_manager = _import_script("task_manager")
-
 
 def _import_script(script_name: str):
     """
@@ -67,6 +64,7 @@ _zarr_module = _import_script("05_tif_to_zarr")
 _mosaic_clip_module = _import_script("07_mosaic_clip")
 _s1_preprocess_module = _import_script("08_s1_preprocess")
 _cdse_slc_module = _import_script("cdse_s1_slc")
+_task_manager = _import_script("task_manager")
 
 
 def run_pipeline(
