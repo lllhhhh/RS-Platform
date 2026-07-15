@@ -341,9 +341,11 @@ def extract_signed_urls(items: list, download_dir: Path, aoi_geom=None, satellit
     # 存储元数据（用于后续处理步骤）
     metadata = {"scenes": [], "generated_at": datetime.now().isoformat(), "satellite": satellite}
 
-    for idx, item in enumerate(items):
-        print(f"[STAC] 处理第 {idx + 1}/{len(items)} 景: {item.id}")
+    # 打印搜索结果表格
+    print(f"\n  {'序号':>4}  {'日期':<12} {'云量':>6} {'覆盖率':>8}  {'场景ID'}")
+    print(f"  {'----':>4}  {'----------':<12} {'------':>6} {'------':>8}  {'--------'}")
 
+    for idx, item in enumerate(items):
         # 重新签名（sign_inplace 已在 Client.open 时设置，此处再次确保）
         signed_item = planetary_computer.sign(item)
 
@@ -352,11 +354,16 @@ def extract_signed_urls(items: list, download_dir: Path, aoi_geom=None, satellit
         if aoi_geom is not None:
             coverage_ratio = compute_coverage(item.geometry, aoi_geom)
 
+        # 打印当前影像信息
+        cloud_cover = item.properties.get("eo:cloud_cover", 0)
+        coverage_str = f"{coverage_ratio:.1%}" if coverage_ratio is not None else "N/A"
+        print(f"  {idx+1:>4}  {item.datetime.strftime('%Y-%m-%d'):<12} {cloud_cover:>5.1f}% {coverage_str:>8}  {item.id[:50]}")
+
         scene_meta = {
             "scene_id": item.id,
             "datetime": item.datetime.isoformat(),
             "date": item.datetime.strftime("%Y%m%d"),
-            "cloud_cover": item.properties.get("eo:cloud_cover", 0),
+            "cloud_cover": cloud_cover,
             "bbox": list(item.bbox) if item.bbox else None,
             "coverage_ratio": coverage_ratio,
             "geometry": item.geometry,

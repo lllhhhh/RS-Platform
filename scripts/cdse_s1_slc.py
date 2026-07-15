@@ -279,6 +279,29 @@ def search_slc(
 
     print(f"[CDSE] 找到 {len(filtered)} 景 IW 双极化 SLC（共搜索到 {len(all_features)} 景）")
 
+    # 计算每个产品与 AOI 的重叠率（仅展示，不过滤）
+    if aoi_geom is not None:
+        aoi_area = aoi_geom.area
+        if aoi_area > 0:
+            for p in filtered:
+                footprint = _get_product_footprint(p)
+                if footprint:
+                    try:
+                        intersection = footprint.intersection(aoi_geom)
+                        p["aoi_overlap_ratio"] = intersection.area / aoi_area
+                    except Exception:
+                        p["aoi_overlap_ratio"] = 0
+                else:
+                    p["aoi_overlap_ratio"] = 0
+
+    # 打印搜索结果表格
+    print(f"\n  {'序号':>4}  {'日期':<12} {'轨道':<12} {'AOI重叠':>8}  {'场景ID'}")
+    print(f"  {'----':>4}  {'----------':<12} {'----------':<12} {'------':>8}  {'--------'}")
+    for i, p in enumerate(filtered):
+        overlap = p.get("aoi_overlap_ratio", 0)
+        overlap_str = f"{overlap:.1%}" if overlap > 0 else "N/A"
+        print(f"  {i+1:>4}  {p['date_display']:<12} {p['orbit_direction']:<12} {overlap_str:>8}  {p['scene_id'][:50]}")
+
     # 获取详细属性（需要请求每个 feature 的详情）
     for item in filtered:
         feature = item["feature"]
