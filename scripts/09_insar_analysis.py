@@ -386,23 +386,19 @@ def run_insar(
         print("  [警告] Goldstein 滤波不可用")
         print("  [提示] 请通过 SNAP Desktop → Tools → Plugin Manager 更新 S1-InSAR 插件")
 
-    # ========== Step 7: 地形校正（地理编码，可选）==========
+    # ========== Step 7: 地形校正（地理编码）==========
+    # NOTE: SNAP 处理 TOPS SLC 数据时，指定 mapProjection='EPSG:4326' 会触发除零 bug
+    # 解决方案: TC 使用默认投影，然后用 GDAL 重投影到 EPSG:4326
     print("[InSAR] Step 7/7: 地形校正（Terrain-Correction）...")
     try:
         tc_params = HashMap()
         tc_params.put("demName", "SRTM 3Sec")
-        tc_params.put("demResamplingMethod", "BILINEAR_INTERPOLATION")
-        tc_params.put("imgResamplingMethod", "BILINEAR_INTERPOLATION")
-        tc_params.put("pixelSpacingInMeter", "10.0")
-        tc_params.put("mapProjection", "EPSG:4326")
-        tc_params.put("nodataValueAtSea", "true")
-        tc_params.put("maskOutAreaWithoutElevation", "true")
+        tc_params.put("pixelSpacingInMeter", "100.0")
         result = GPF.createProduct("Terrain-Correction", tc_params, filtered)
         print("  地形校正完成")
     except Exception as e:
         print(f"  [警告] 地形校正失败: {e.__class__.__name__}: {e}")
         print("  [提示] 将输出斜距坐标系的干涉结果")
-        print("  [提示] 可能原因: 轨道文件缺失、DEM数据不足、或干涉图数据为空")
         result = filtered
 
     print("  InSAR 处理完成")
@@ -472,6 +468,43 @@ def run_insar(
     # 导出报告
     report_path = output_dir / f"{prefix}_report.json"
     export_report(stats, report_path)
+
+    # 重投影到 EPSG:4326（SNAP TC 对 TOPS SLC 的 EPSG:4326 有 bug）
+    try:
+        import rasterio
+        from rasterio.warp import calculate_default_transform, reproject, Resampling
+        print("\n[InSAR] 重投影到 EPSG:4326...")
+        for tif_path in output_dir.glob(f"{prefix}*.tif"):
+            if "_epsg4326" in tif_path.name:
+                continue
+            try:
+                with rasterio.open(tif_path) as src:
+                    if src.crs and src.crs.to_epsg() == 4326:
+                        continue  # 已经是 EPSG:4326
+                    transform, width, height = calculate_default_transform(
+                        src.crs, "EPSG:4326", src.width, src.height, *src.bounds
+                    )
+                    kwargs = src.meta.copy()
+                    kwargs.update(crs="EPSG:4326", transform=transform, width=width, height=height)
+                    out_path = tif_path.parent / f"{tif_path.stem}_4326.tif"
+                    with rasterio.open(out_path, "w", **kwargs) as dst:
+                        for i in range(1, src.count + 1):
+                            reproject(
+                                source=rasterio.band(src, i),
+                                destination=rasterio.band(dst, i),
+                                src_transform=src.transform,
+                                src_crs=src.crs,
+                                dst_transform=transform,
+                                dst_crs="EPSG:4326",
+                                resampling=Resampling.nearest,
+                            )
+                tif_path.unlink()
+                out_path.rename(tif_path)
+                print(f"  重投影: {tif_path.name}")
+            except Exception as e:
+                print(f"  [提示] {tif_path.name} 重投影失败: {e}")
+    except Exception as e:
+        print(f"  [提示] 重投影跳过: {e}")
 
     # 清理
     master_product.dispose()

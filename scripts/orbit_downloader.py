@@ -5,7 +5,7 @@ orbit_downloader.py - Sentinel-1 轨道文件自动下载
 自动下载 Sentinel-1 精密轨道文件（POEORB），供 snappy 预处理和 InSAR 使用。
 
 轨道文件存储位置：
-  Windows: C:\Users\<用户名>\.snap\auxdata\Orbits\Sentinel-1\POEORB\S1A\{year}\{month}\
+  Windows: ~/.snap/auxdata/Orbits/Sentinel-1/POEORB/S1A/{year}/{month}/
 
 使用方式：
     from scripts.orbit_downloader import ensure_orbit_files
@@ -189,17 +189,10 @@ def _find_and_download_orbit(platform: str, target_date: str) -> Path:
         print(f"  [错误] 无法获取远程文件列表")
         return None
 
-    # 查找覆盖目标日期的文件
+    # 查找覆盖目标日期的文件（只通过覆盖范围匹配，不通过交付日期）
     for filename in remote_files:
-        if target_date.replace("-", "") in filename or _orbit_file_covers_date_name(filename, target_date):
+        if _orbit_file_covers_date_name(filename, target_date):
             return _download_orbit_file(platform, dt.year, dt.month, filename)
-
-    # 如果精确匹配失败，尝试下载所有文件（数量不多）
-    print(f"  [提示] 精确匹配失败，尝试逐个检查...")
-    for filename in remote_files:
-        result = _download_orbit_file(platform, dt.year, dt.month, filename)
-        if result and _orbit_file_covers_date(result, target_date):
-            return result
 
     print(f"  [错误] 未找到覆盖 {target_date} 的轨道文件")
     return None
