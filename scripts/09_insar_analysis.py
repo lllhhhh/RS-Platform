@@ -32,6 +32,28 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import os
+
+
+def _ensure_java_home() -> bool:
+    """自动检测并设置 JAVA_HOME（ESA SNAP JRE）。"""
+    if os.environ.get("JAVA_HOME"):
+        return True
+
+    candidates = [
+        r"D:\esa-snap\jre",
+        r"C:\esa-snap\jre",
+        r"/usr/local/snap/jre",
+        r"/opt/snap/jre",
+    ]
+    for path in candidates:
+        if os.path.isdir(path):
+            os.environ["JAVA_HOME"] = path
+            print(f"[InSAR] 自动设置 JAVA_HOME={path}")
+            return True
+
+    return False
+
 
 def list_slc_scenes(data_dir: Path) -> list:
     """
@@ -163,6 +185,12 @@ def run_insar(
     Returns:
         dict: 处理结果信息
     """
+    if not _ensure_java_home():
+        print("[错误] 未找到 JAVA_HOME，esa_snappy 需要 JVM 支持")
+        print("  请设置环境变量: set JAVA_HOME=D:\\esa-snap\\jre")
+        print("  或安装 ESA SNAP Desktop: https://step.esa.int/")
+        sys.exit(1)
+
     from esa_snappy import ProductIO, GPF, HashMap
 
     if output_dir is None:

@@ -22,11 +22,32 @@
 """
 
 import argparse
+import os
 import sys
 import traceback
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+
+def _ensure_java_home() -> bool:
+    """自动检测并设置 JAVA_HOME（ESA SNAP JRE）。"""
+    if os.environ.get("JAVA_HOME"):
+        return True
+
+    candidates = [
+        r"D:\esa-snap\jre",
+        r"C:\esa-snap\jre",
+        r"/usr/local/snap/jre",
+        r"/opt/snap/jre",
+    ]
+    for path in candidates:
+        if os.path.isdir(path):
+            os.environ["JAVA_HOME"] = path
+            print(f"[S1预处理] 自动设置 JAVA_HOME={path}")
+            return True
+
+    return False
 
 
 def preprocess_single_tif(input_path: Path, output_path: Path) -> Path:
@@ -44,6 +65,12 @@ def preprocess_single_tif(input_path: Path, output_path: Path) -> Path:
     Returns:
         Path: 输出文件路径
     """
+    if not _ensure_java_home():
+        print("[错误] 未找到 JAVA_HOME，esa_snappy 需要 JVM 支持")
+        print("  请设置环境变量: set JAVA_HOME=D:\\esa-snap\\jre")
+        print("  或安装 ESA SNAP Desktop: https://step.esa.int/")
+        sys.exit(1)
+
     import esa_snappy as snappy
     from esa_snappy import ProductIO, GPF
 
