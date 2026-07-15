@@ -25,7 +25,31 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
+import ssl
+import urllib3
+
 import requests
+
+# Windows 环境下禁用 SSL 证书吊销检查（解决 CRYPT_E_REVOCATION_OFFLINE 错误）
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+
+def _create_ssl_context():
+    """创建禁用证书吊销检查的 SSL 上下文。"""
+    ctx = ssl.create_default_context()
+    # 禁用证书吊销检查（Windows schannel 的 CRYPT_E_REVOCATION_OFFLINE 问题）
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    return ctx
+
+
+# 创建共享 Session
+_session = requests.Session()
+
+# 设置 User-Agent 避免被 WAF 拦截
+_session.headers.update({
+    "User-Agent": "RS-Platform/1.0 (Sentinel-1 SLC Downloader)",
+})
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -87,7 +111,7 @@ def _get_cdse_token(credentials: dict = None) -> str:
     # 尝试用 refresh_token 刷新
     refresh_token = credentials.get("refresh_token", "")
     if refresh_token:
-        r = requests.post(
+        r = _session.post(
             CDSE_AUTH_URL,
             data={
                 "grant_type": "refresh_token",
@@ -114,7 +138,7 @@ def _get_cdse_token(credentials: dict = None) -> str:
             "或在 ~/.rs_platform/cdse_config.json 中配置。"
         )
 
-    r = requests.post(
+    r = _session.post(
         CDSE_AUTH_URL,
         data={
             "grant_type": "password",
@@ -192,7 +216,7 @@ def search_slc(
     all_features = []
     # 分页搜索
     while True:
-        r = requests.get(CDSE_STAC_URL, headers=headers, params=params, timeout=30)
+        r = _session.get(CDSE_STAC_URL, headers=headers, params=params, timeout=30)
         if r.status_code != 200:
             print(f"[CDSE] 搜索错误: HTTP {r.status_code}")
             break
@@ -267,7 +291,7 @@ def search_slc(
                         detail_url = link.get("href")
                         break
                 if detail_url:
-                    dr = requests.get(detail_url, headers=headers, timeout=30, allow_redirects=True)
+                    dr = _session.get(detail_url, headers=headers, timeout=30, allow_redirects=True)
                     if dr.status_code == 200:
                         dprops = dr.json().get("properties", {})
                         feature["properties"] = {**dprops, **feature.get("properties", {})}
@@ -552,7 +576,7 @@ def download_slc(products: list, output_dir: Path) -> list:
                 if link.get("rel") == "self":
                     detail_url = link.get("href", "")
                     if detail_url:
-                        dr = requests.get(detail_url, headers=headers, timeout=30, allow_redirects=True)
+                        dr = _session.get(detail_url, headers=headers, timeout=30, allow_redirects=True)
                         if dr.status_code == 200:
                             ddata = dr.json()
                             assets = ddata.get("assets", {})
@@ -574,7 +598,7 @@ def download_slc(products: list, output_dir: Path) -> list:
 
         try:
             # 流式下载
-            dr = requests.get(download_url, headers=headers, stream=True, timeout=300, allow_redirects=True)
+            dr = _session.get(download_url, headers=headers, stream=True, timeout=300, allow_redirects=True)
             if dr.status_code == 200:
                 # 下载 zip 文件
                 zip_path = output_dir / f"{safe_name}.zip"

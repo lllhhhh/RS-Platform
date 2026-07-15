@@ -67,10 +67,15 @@
 | 5 | `03_band_merge.py` | 波段合成 | vv+vh | vv+vh(SAFE提取) | 用户选择的波段 |
 | 6 | `08_s1_preprocess.py` | snappy 预处理 | **执行** | 跳过 | 跳过 |
 | 7 | `04_cloud_mask.py` | SCL 去云 | 跳过 | 跳过 | **执行** |
-| 8 | `07_mosaic_clip.py` | 裁剪（独立/拼接） | ✓ | ✓ | ✓ |
-| 9 | `05_tif_to_zarr.py` | TIF→ZARR | ✓ | ✓ | ✓ |
+| 8 | `07_mosaic_clip.py` | 裁剪（独立/拼接） | ✓ | 跳过 | ✓ |
+| 9 | `05_tif_to_zarr.py` | TIF→ZARR | ✓ | 跳过 | ✓ |
 
-**InSAR 形变监测**（`09_insar_analysis.py`）为独立模块，不集成到常规管线。
+**说明：**
+- **S1 SLC**：下载后直接用于 InSAR 分析，跳过裁剪和 ZARR 转换（SLC 是斜距坐标，无地理坐标）
+- **S1 GRD**：完整的 9 步处理流程
+- **S2**：完整的 9 步处理流程，支持波段选择
+
+**InSAR 形变监测**（`09_insar_analysis.py`）为独立模块，用于 SLC 数据分析。
 
 ### S2 波段选择
 
@@ -160,17 +165,18 @@ python scripts/06_pipeline.py --satellite sentinel1 --bbox 116.0 39.0 117.0 40.0
 python scripts/06_pipeline.py --satellite sentinel1 --adcode 110000
 
 # ==================== Sentinel-1 SLC（用于 InSAR）====================
+# 步骤1: 下载 SLC 数据（自动跳过裁剪和ZARR转换）
 python scripts/06_pipeline.py --satellite sentinel1 --s1-product slc --bbox 116.0 39.0 117.0 40.0 --date "2024-01-01/2024-03-01"
+
+# 步骤2: 执行 InSAR 分析（下载完成后）
+python scripts/09_insar_analysis.py --data-dir ./data/tasks/<任务ID> --polarization vv
+python scripts/09_insar_analysis.py --master path/master.tif --slave path/slave.tif --polarization vv
 
 # ==================== 任务管理 ====================
 # 每次运行管线会自动创建独立的任务目录
 python scripts/task_manager.py list           # 列出所有任务
 python scripts/task_manager.py info TASK_ID   # 查看任务详情
 python scripts/task_manager.py cleanup --keep 5  # 清理旧任务
-
-# ==================== InSAR 形变监测 ====================
-python scripts/09_insar_analysis.py --data-dir ./data --polarization vv
-python scripts/09_insar_analysis.py --master path/master.tif --slave path/slave.tif --polarization vv
 ```
 
 ### 3. 启动后端 API
@@ -268,7 +274,19 @@ RS-Platform/
 
 ## InSAR 形变监测
 
-独立模块 `09_insar_analysis.py`，对两幅 Sentinel-1 SLC 影像执行 InSAR 处理：
+独立模块 `09_insar_analysis.py`，对两幅 Sentinel-1 SLC 影像执行 InSAR 处理。
+
+### SLC 数据处理流程
+
+```
+1. 下载 SLC 数据
+   python scripts/06_pipeline.py --satellite sentinel1 --s1-product slc --bbox ...
+
+2. 执行 InSAR 分析
+   python scripts/09_insar_analysis.py --data-dir ./data/tasks/<任务ID> --polarization vv
+```
+
+### InSAR 处理链
 
 ```
 主影像 → Apply-Orbit-File ─┐
@@ -276,11 +294,21 @@ RS-Platform/
 从影像 → Apply-Orbit-File ─┘
 ```
 
-**输出产品：**
-- 干涉相位图（`*_phase.tif`）
-- 相干性图（`*_coherence.tif`）
-- 形变图（`*_deformation.tif`）
-- 分析报告（`*_report.json`：形变量统计、相干性统计）
+### 输出产品
+
+| 文件 | 说明 |
+|------|------|
+| `*_phase.tif` | 干涉相位图 |
+| `*_coherence.tif` | 相干性图 |
+| `*_deformation.tif` | 形变图（单位：米） |
+| `*_report.json` | 分析报告（形变量统计、相干性统计） |
+
+### 注意事项
+
+- SLC 数据是斜距坐标，下载后**跳过裁剪和ZARR转换**
+- InSAR 输出（形变图等）具有正确的地理坐标，可用于后续分析
+- 需要至少两幅 SLC 影像（主影像和从影像）
+- 建议选择时间跨度适中的影像对（太短无形变，太长失相干）
 
 ## 后续开发
 
