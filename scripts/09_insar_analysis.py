@@ -332,6 +332,25 @@ def run_insar(
     source_products.put("slave", slave_split)
     coregistered = GPF.createProduct("Back-Geocoding", bg_params, source_products)
 
+    # 诊断: 检查配准后从影像是否有有效数据
+    import numpy as np
+    coreg_bands = list(coregistered.getBandNames())
+    slave_bands = [b for b in coreg_bands if 'slv' in b.lower()]
+    if slave_bands:
+        band = coregistered.getBand(slave_bands[0])
+        w = min(1000, band.getRasterWidth())
+        h = min(1000, band.getRasterHeight())
+        x0 = (band.getRasterWidth() - w) // 2
+        y0 = (band.getRasterHeight() - h) // 2
+        data = np.zeros(w * h, dtype=np.float32)
+        band.readPixels(x0, y0, w, h, data)
+        valid_count = int(np.count_nonzero(data))
+        if valid_count == 0:
+            print("  [警告] 配准后从影像数据全为零！两幅影像可能不重叠")
+            print("  [提示] 请选择同一轨道位置的影像对")
+        else:
+            print(f"  配准验证: 从影像有效像素 {valid_count}/{w*h}")
+
     ifg_params = HashMap()
     ifg_params.put("subtractFlatEarthPhase", "true")
     ifg_params.put("srpPolynomialDegree", "5")
@@ -381,8 +400,9 @@ def run_insar(
         result = GPF.createProduct("Terrain-Correction", tc_params, filtered)
         print("  地形校正完成")
     except Exception as e:
-        print(f"  [警告] 地形校正失败: {e.__class__.__name__}")
+        print(f"  [警告] 地形校正失败: {e.__class__.__name__}: {e}")
         print("  [提示] 将输出斜距坐标系的干涉结果")
+        print("  [提示] 可能原因: 轨道文件缺失、DEM数据不足、或干涉图数据为空")
         result = filtered
 
     print("  InSAR 处理完成")
