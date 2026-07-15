@@ -277,6 +277,143 @@ def search_slc(
     return filtered
 
 
+def _get_product_footprint(product: dict):
+    """
+    从产品信息中提取足迹几何对象。
+
+    Args:
+        product: search_slc 返回的产品字典
+
+    Returns:
+        Shapely Geometry 或 None
+    """
+    from shapely.geometry import shape
+
+    geom = product.get("geometry")
+    if geom:
+        try:
+            return shape(geom)
+        except Exception:
+            pass
+
+    bbox = product.get("bbox")
+    if bbox and len(bbox) == 4:
+        from shapely.geometry import box
+        return box(bbox[0], bbox[1], bbox[2], bbox[3])
+
+    return None
+
+
+def filter_slc_by_overlap(products: list, aoi_geom, min_overlap_ratio: float = 0.3) -> list:
+    """
+    过滤 SLC 产品，只保留与 AOI 有充分重叠的产品。
+
+    SLC IW 产品足迹很长（沿轨道数百公里），搜索时只检查是否与 bbox 相交，
+    但实际可能只在边缘相交。此函数过滤掉与 AOI 重叠不足的产品。
+
+    Args:
+        products: search_slc 返回的产品列表
+        aoi_geom: 研究区几何对象（Shapely Geometry）
+        min_overlap_ratio: 最小重叠比例（相对于 AOI 面积）
+
+    Returns:
+        list: 过滤后的产品列表
+    """
+    if not aoi_geom:
+        return products
+
+    aoi_area = aoi_geom.area
+    if aoi_area == 0:
+        return products
+
+    filtered = []
+    for p in products:
+        footprint = _get_product_footprint(p)
+        if footprint is None:
+            continue
+
+        try:
+            intersection = footprint.intersection(aoi_geom)
+            overlap_ratio = intersection.area / aoi_area
+            p["aoi_overlap_ratio"] = overlap_ratio
+
+            if overlap_ratio >= min_overlap_ratio:
+                filtered.append(p)
+        except Exception:
+            # 几何计算失败，保留产品
+            filtered.append(p)
+
+    # 按重叠比例排序（高的在前）
+    filtered.sort(key=lambda x: x.get("aoi_overlap_ratio", 0), reverse=True)
+
+    removed = len(products) - len(filtered)
+    if removed > 0:
+        print(f"[CDSE] 过滤掉 {removed} 个与 AOI 重叠不足的产品（保留 {len(filtered)} 个）")
+
+    return filtered
+
+
+def group_slc_by_overlap(products: list, min_mutual_overlap: float = 0.5) -> list:
+    """
+    将 SLC 产品按相互重叠程度分组。
+
+    只有相互之间有充分重叠的产品才能用于 InSAR。
+
+    Args:
+        products: 过滤后的 SLC 产品列表
+        min_mutual_overlap: 产品间最小重叠比例（相对于较小产品的面积）
+
+    Returns:
+        list[list]: 分组后的产品列表，每组内的产品相互重叠
+    """
+    if len(products) <= 1:
+        return [products]
+
+    footprints = []
+    for p in products:
+        fp = _get_product_footprint(p)
+        footprints.append(fp)
+
+    # 使用并查集分组
+    parent = list(range(len(products)))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(x, y):
+        px, py = find(x), find(y)
+        if px != py:
+            parent[px] = py
+
+    for i in range(len(products)):
+        if footprints[i] is None:
+            continue
+        for j in range(i + 1, len(products)):
+            if footprints[j] is None:
+                continue
+            try:
+                intersection = footprints[i].intersection(footprints[j])
+                min_area = min(footprints[i].area, footprints[j].area)
+                if min_area > 0 and intersection.area / min_area >= min_mutual_overlap:
+                    union(i, j)
+            except Exception:
+                pass
+
+    # 收集分组
+    groups = defaultdict(list)
+    for i in range(len(products)):
+        groups[find(i)].append(products[i])
+
+    result = list(groups.values())
+    # 按组大小排序（大的在前）
+    result.sort(key=len, reverse=True)
+
+    return result
+
+
 def select_orbit_direction_interactive(products: list) -> list:
     """
     交互式选择升降轨和具体场景。

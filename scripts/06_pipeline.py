@@ -209,10 +209,26 @@ def run_pipeline(
                 results["steps"]["search"] = {"status": "no_results", "count": 0}
                 return results
 
+            # 过滤与 AOI 重叠不足的产品
+            cdse_products = _cdse_slc_module.filter_slc_by_overlap(cdse_products, aoi_geom)
+
+            if not cdse_products:
+                print("[管线] 过滤后无有效 SLC 产品（与研究区重叠不足），管线终止")
+                results["steps"]["search"] = {"status": "no_valid_products", "count": 0}
+                return results
+
+            # 按相互重叠分组
+            overlap_groups = _cdse_slc_module.group_slc_by_overlap(cdse_products)
+            print(f"[CDSE] 产品分为 {len(overlap_groups)} 个重叠组")
+            for i, group in enumerate(overlap_groups):
+                dates = [p["date_display"] for p in group]
+                print(f"  组 {i+1}: {len(group)} 景 ({', '.join(dates[:5])}{'...' if len(dates) > 5 else ''})")
+
             step1_time = time.time() - step1_start
             results["steps"]["search"] = {
                 "status": "success",
                 "count": len(cdse_products),
+                "overlap_groups": len(overlap_groups),
                 "time_sec": round(step1_time, 1),
             }
         except Exception as e:
@@ -226,12 +242,21 @@ def run_pipeline(
         print("-" * 40)
 
         if auto_select:
-            # 自动模式：选择第一个轨道方向的所有场景
-            orbit_dirs = list({p["orbit_direction"] for p in cdse_products})
-            selected_slc = [p for p in cdse_products if p["orbit_direction"] == orbit_dirs[0]]
-            print(f"[自动选择] {orbit_dirs[0]}，共 {len(selected_slc)} 景")
+            # 自动模式：选择最大的重叠组（确保影像相互重叠）
+            largest_group = overlap_groups[0] if overlap_groups else cdse_products
+            orbit_dirs = list({p["orbit_direction"] for p in largest_group})
+            selected_slc = largest_group
+            print(f"[自动选择] 选择最大重叠组，{len(selected_slc)} 景，轨道方向: {orbit_dirs}")
         else:
+            # 交互模式：先选轨道方向，然后从重叠组中选择
             selected_slc = _cdse_slc_module.select_orbit_direction_interactive(cdse_products)
+            # 验证选择的产品是否相互重叠
+            if selected_slc and len(selected_slc) > 1:
+                groups = _cdse_slc_module.group_slc_by_overlap(selected_slc)
+                if len(groups) > 1:
+                    print(f"\n[警告] 选择的 {len(selected_slc)} 景影像分为 {len(groups)} 个不重叠的组")
+                    print("[提示] 仅第一组将被用于 InSAR 分析")
+                    selected_slc = groups[0]
 
         if not selected_slc:
             print("[管线] 未选择任何场景，管线终止")
