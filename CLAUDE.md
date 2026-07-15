@@ -143,7 +143,8 @@ uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
 - **SCL 重采样**：必须用最近邻（nearest），不能用双线性等插值，否则会产生无效的分类值。
 - **波段分辨率**：B02/B03/B04 为 10m，SCL 为 20m，需要重采样对齐。
 - **Windows 环境**：ARIA2 路径指向 `aria2-1.37.0-win-64bit-build1/aria2c.exe`。
-- **esa_snappy 依赖**：S1 GRD 预处理（`08_s1_preprocess.py`）和 InSAR 分析（`09_insar_analysis.py`）需要 `esa_snappy`。安装步骤：① 安装 ESA SNAP Desktop ② `pip install esa-snappy` ③ 解压 `esa_snappy/lib/` 下的 jpy wheel 包 ④ 设置 `JAVA_HOME=D:\esa-snap\jre`。轨道文件首次运行时自动下载。代码中使用 `from esa_snappy import ProductIO, GPF, HashMap`。
+- **esa_snappy 依赖**：S1 GRD 预处理（`08_s1_preprocess.py`）和 InSAR 分析（`09_insar_analysis.py`）需要 `esa_snappy`。安装步骤：① 安装 ESA SNAP Desktop ② `pip install esa-snappy` ③ 解压 `esa_snappy/lib/` 下的 jpy wheel 包 ④ 设置 `JAVA_HOME=D:\esa-snap\jre`。代码中使用 `from esa_snappy import ProductIO, GPF, HashMap`。
+- **轨道文件**：GRD 预处理和 InSAR 分析前会自动从 ESA 服务器下载精密轨道文件（POEORB），存储在 `~/.snap/auxdata/Orbits/Sentinel-1/POEORB/`。也可手动下载：`python scripts/orbit_downloader.py 2024-01-06 2024-02-28`。
 - **S1 SLC vs GRD**：`--s1-product grd`（默认）下载 GRD 产品并执行 snappy 预处理；`--s1-product slc` 下载 SLC 产品用于 InSAR 分析。
 
 ## 数据目录结构
