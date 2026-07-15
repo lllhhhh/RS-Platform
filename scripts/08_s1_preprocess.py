@@ -140,6 +140,9 @@ def preprocess_s1_scenes(data_dir: Path, scene_ids: set = None) -> list:
     Returns:
         list: 预处理后的 TIF 文件路径列表
     """
+    import re
+    from scripts.orbit_downloader import ensure_orbit_files
+
     merged_dir = data_dir / "merged"
     cloud_masked_dir = data_dir / "cloud_masked"
 
@@ -147,6 +150,19 @@ def preprocess_s1_scenes(data_dir: Path, scene_ids: set = None) -> list:
 
     # 扫描 S1 合成后的 TIF
     tif_files = sorted(merged_dir.glob("*_S1_merged.tif"))
+
+    # 预下载轨道文件
+    if tif_files:
+        dates = set()
+        for tif_file in tif_files:
+            # 从文件名提取日期（格式: ..._YYYYMMDD_...）
+            match = re.search(r'_(\d{8})_', tif_file.name)
+            if match:
+                d = match.group(1)
+                dates.add(f"{d[:4]}-{d[4:6]}-{d[6:8]}")
+        if dates:
+            print(f"[S1预处理] 检查轨道文件（{len(dates)} 个日期）...")
+            ensure_orbit_files(sorted(dates), platform="S1A")
 
     if not tif_files:
         print("[S1预处理] 未找到 S1 合成 TIF 文件")

@@ -35,21 +35,47 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 def list_slc_scenes(data_dir: Path) -> list:
     """
-    列出 mosaicked 目录下可用的 SLC 裁剪影像。
+    列出可用的 SLC 影像。
+
+    优先查找 SAFE 目录（InSAR 需要完整元数据），
+    其次查找 merged 目录的 TIF，最后查找 mosaicked 目录。
 
     Args:
         data_dir: 数据目录
 
     Returns:
-        list: SLC 裁剪影像路径列表
+        list: SLC 影像路径列表
     """
-    mosaicked_dir = data_dir / "mosaicked"
-    if not mosaicked_dir.exists():
-        return []
+    # 优先从 SAFE 目录查找（InSAR 需要完整 SAR 元数据）
+    s1_slc_dir = data_dir / "downloads" / "s1_slc"
+    if s1_slc_dir.exists():
+        safe_dirs = sorted(s1_slc_dir.glob("*.SAFE"))
+        if safe_dirs:
+            return safe_dirs
 
-    # SLC 裁剪后的文件名格式: *_clipped.tif
-    slc_files = sorted(mosaicked_dir.glob("*_clipped.tif"))
-    return slc_files
+    # 其次从 merged 目录查找 SLC 合成影像
+    merged_dir = data_dir / "merged"
+    if merged_dir.exists():
+        slc_files = sorted(merged_dir.glob("*_S1_merged.tif"))
+        if slc_files:
+            return slc_files
+
+    # 兼容 mosaicked 目录的裁剪影像
+    mosaicked_dir = data_dir / "mosaicked"
+    if mosaicked_dir.exists():
+        slc_files = sorted(mosaicked_dir.glob("*_clipped.tif"))
+        if slc_files:
+            return slc_files
+
+    return []
+
+
+def _get_safe_display_name(safe_path: Path) -> str:
+    """从 SAFE 路径提取简洁的显示名称。"""
+    name = safe_path.name
+    if name.endswith(".SAFE"):
+        name = name[:-5]
+    return name
 
 
 def select_scenes_interactive(slc_files: list) -> tuple:
@@ -67,7 +93,7 @@ def select_scenes_interactive(slc_files: list) -> tuple:
     print("=" * 60)
 
     for i, f in enumerate(slc_files):
-        print(f"  {i + 1}. {f.name}")
+        print(f"  {i + 1}. {f.name if f.suffix == '.tif' else _get_safe_display_name(f)}")
 
     print("-" * 60)
     print("请选择两幅影像进行 InSAR 分析（先选主影像，再选从影像）")
@@ -143,10 +169,20 @@ def run_insar(
         output_dir = master_path.parent.parent / "insar"
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # 判断是否为 SAFE 目录
+    is_safe = master_path.suffix.upper() == ".SAFE" or (master_path.is_dir() and master_path.name.upper().endswith(".SAFE"))
+
     # 生成输出文件名前缀
-    master_stem = master_path.stem.replace("_clipped", "")
-    slave_stem = slave_path.stem.replace("_clipped", "")
-    prefix = f"ifg_{master_stem}_vs_{slave_stem}"
+    if is_safe:
+        master_stem = master_path.name.replace(".SAFE", "").replace(".safe", "")
+        slave_stem = slave_path.name.replace(".SAFE", "").replace(".safe", "")
+    else:
+        master_stem = master_path.stem.replace("_clipped", "").replace("_S1_merged", "")
+        slave_stem = slave_path.stem.replace("_clipped", "").replace("_S1_merged", "")
+    # 截取简短名称（取日期部分）
+    master_short = master_stem.split("_T")[0] if "_T" in master_stem else master_stem[:50]
+    slave_short = slave_stem.split("_T")[0] if "_T" in slave_stem else slave_stem[:50]
+    prefix = f"ifg_{master_short}_vs_{slave_short}"
 
     print(f"\n{'=' * 60}")
     print(f"InSAR 处理开始")
@@ -157,37 +193,60 @@ def run_insar(
     print(f"输出目录: {output_dir}")
     print(f"{'=' * 60}")
 
+    # ========== Step 0: 确保轨道文件可用 ==========
+    print("\n[InSAR] Step 0/7: 检查轨道文件...")
+    from scripts.orbit_downloader import ensure_orbit_files
+    import re
+
+    # 从 SAFE 目录名提取日期
+    def _extract_date_from_safe(safe_path):
+        name = safe_path.name if safe_path.is_dir() else safe_path.stem
+        match = re.search(r'(\d{8})T\d{6}', name)
+        if match:
+            d = match.group(1)
+            return f"{d[:4]}-{d[4:6]}-{d[6:8]}"
+        return None
+
+    master_date = _extract_date_from_safe(master_path)
+    slave_date = _extract_date_from_safe(slave_path)
+
+    dates_to_fetch = []
+    if master_date:
+        dates_to_fetch.append(master_date)
+    if slave_date and slave_date != master_date:
+        dates_to_fetch.append(slave_date)
+
+    if dates_to_fetch:
+        orbit_results = ensure_orbit_files(dates_to_fetch, platform="S1A")
+        if orbit_results:
+            print(f"  轨道文件就绪: {list(orbit_results.keys())}")
+        else:
+            print("  [警告] 未能获取轨道文件，InSAR 精度可能受影响")
+
     # ========== Step 1: 读取主从影像 ==========
     print("\n[InSAR] Step 1/6: 读取主从影像...")
-    master_product = ProductIO.readProduct(str(master_path))
-    slave_product = ProductIO.readProduct(str(slave_path))
+    if is_safe:
+        # SAFE 格式：读取 manifest.safe
+        manifest_master = master_path / "manifest.safe"
+        manifest_slave = slave_path / "manifest.safe"
+        print(f"  读取 SAFE 格式: {manifest_master}")
+        master_product = ProductIO.readProduct(str(manifest_master))
+        slave_product = ProductIO.readProduct(str(manifest_slave))
+    else:
+        master_product = ProductIO.readProduct(str(master_path))
+        slave_product = ProductIO.readProduct(str(slave_path))
 
-    # 选择极化通道波段
+    # 显示波段信息
     master_bands = list(master_product.getBandNames())
-    print(f"  主影像波段: {master_bands}")
+    slave_bands = list(slave_product.getBandNames())
+    print(f"  主影像波段数: {len(master_bands)}")
+    print(f"  从影像波段数: {len(slave_bands)}")
 
-    # 如果有多波段，按极化通道选择
+    # 显示匹配的极化通道波段
     pol_upper = polarization.upper()
-    selected_master_bands = [b for b in master_bands if pol_upper in b.upper()]
-    selected_slave_bands = [
-        b for b in slave_product.getBandNames() if pol_upper in b.upper()
-    ]
-
-    if selected_master_bands and selected_slave_bands:
-        print(f"  选择极化通道: {pol_upper}")
-        # 使用 BandSelect 选择特定波段
-        band_select_params = HashMap()
-        master_band_list = ",".join(selected_master_bands)
-        slave_band_list = ",".join(selected_slave_bands)
-        band_select_params.put(
-            "selectedPolarisations", pol_upper
-        )
-        master_product = GPF.createProduct(
-            "Select-Product-Band", band_select_params, master_product
-        )
-        slave_product = GPF.createProduct(
-            "Select-Product-Band", band_select_params, slave_product
-        )
+    matched_bands = [b for b in master_bands if pol_upper in b.upper()]
+    if matched_bands:
+        print(f"  匹配 {pol_upper} 极化波段: {matched_bands[:6]}...")
 
     # ========== Step 2: 应用轨道文件 ==========
     print("[InSAR] Step 2/6: 应用轨道文件...")
@@ -195,11 +254,13 @@ def run_insar(
     orbit_params.put("orbitType", "Sentinel Precise (Auto Download)")
     orbit_params.put("polyDegree", "3")
 
+    orbit_success = False
     try:
         master_product = GPF.createProduct(
             "Apply-Orbit-File", orbit_params, master_product
         )
         print("  主影像轨道文件应用成功")
+        orbit_success = True
     except Exception as e:
         print(f"  主影像轨道文件跳过: {e.__class__.__name__}")
 
@@ -211,61 +272,92 @@ def run_insar(
     except Exception as e:
         print(f"  从影像轨道文件跳过: {e.__class__.__name__}")
 
-    # ========== Step 3: 配准（Back-Geocoding）==========
-    print("[InSAR] Step 3/6: 影像配准（Back-Geocoding）...")
+    if not orbit_success:
+        print("\n  [警告] 轨道文件未能下载，InSAR 精度可能受影响")
+        print("  [提示] 可手动下载轨道文件到: C:\\Users\\<用户名>\\.snap\\auxdata\\Orbits\\Sentinel-1\\")
+        print("  [提示] 下载地址: https://s1qc.asf.alaska.edu/aux_poeorb/")
+
+    # ========== Step 3: TOPS Split（选择子条带）==========
+    subswath = "IW2"
+    pol_upper = polarization.upper()
+    print(f"[InSAR] Step 3/6: TOPS Split（子条带: {subswath}, 极化: {pol_upper}）...")
+
+    split_params = HashMap()
+    split_params.put("subswath", subswath)
+    split_params.put("polarization", pol_upper)
+    split_params.put("selectedPolarisations", pol_upper)
+
+    master_split = GPF.createProduct("TOPSAR-Split", split_params, master_product)
+    slave_split = GPF.createProduct("TOPSAR-Split", split_params, slave_product)
+    print(f"  主影像 Split 波段: {list(master_split.getBandNames())}")
+
+    # ========== Step 4: Back-Geocoding + 干涉图 ==========
+    print("[InSAR] Step 4/6: Back-Geocoding + 干涉图生成...")
+
     bg_params = HashMap()
     bg_params.put("demName", "SRTM 3Sec")
     bg_params.put("demResamplingMethod", "BILINEAR_INTERPOLATION")
     bg_params.put("maskOutAreaWithoutElevation", "true")
 
     source_products = HashMap()
-    source_products.put("master", master_product)
-    source_products.put("slave", slave_product)
+    source_products.put("master", master_split)
+    source_products.put("slave", slave_split)
     coregistered = GPF.createProduct("Back-Geocoding", bg_params, source_products)
 
-    # ========== Step 4: 干涉图生成 + 地形相位去除 ==========
-    print("[InSAR] Step 4/6: 生成干涉图 + 去除地形相位...")
-
-    # 干涉图生成
     ifg_params = HashMap()
     ifg_params.put("subtractFlatEarthPhase", "true")
     ifg_params.put("srpPolynomialDegree", "5")
     ifg_params.put("srpNumberPoints", "501")
     ifg_params.put("orbitDegree", "3")
     ifg_params.put("includeCoherence", "true")
-    interferogram = GPF.createProduct(
-        "Interferogram-Formation", ifg_params, coregistered
-    )
+    interferogram = GPF.createProduct("Interferogram", ifg_params, coregistered)
 
-    # 地形相位去除
-    topo_params = HashMap()
-    topo_params.put("orbitDegree", "3")
-    topo_params.put("demName", "SRTM 3Sec")
-    topo_params.put("demResamplingMethod", "BILINEAR_INTERPOLATION")
-    interferogram = GPF.createProduct(
-        "TopoPhaseRemoval", topo_params, interferogram
-    )
+    # ========== Step 5: TOPS Deburst ==========
+    print("[InSAR] Step 5/6: TOPS Deburst...")
+    deburst_params = HashMap()
+    deburst_params.put("selectedPolarisations", pol_upper)
+    deburst = GPF.createProduct("TOPSAR-Deburst", deburst_params, interferogram)
+    print("  Deburst 完成")
 
-    # ========== Step 5: Goldstein 相位滤波 ==========
-    print("[InSAR] Step 5/6: Goldstein 相位滤波...")
+    # ========== Step 6: Goldstein 相位滤波（可选）==========
+    print("[InSAR] Step 6/6: Goldstein 相位滤波...")
+    filtered = deburst
     filter_params = HashMap()
     filter_params.put("alpha", "0.5")
     filter_params.put("FFTSizeString", "64")
     filter_params.put("windowSizeString", "3")
     filter_params.put("useCoherenceMask", "false")
-    filtered = GPF.createProduct("GoldsteinPhaseFilter", filter_params, interferogram)
 
-    # ========== Step 6: 地形校正（地理编码）==========
-    print("[InSAR] Step 6/6: 地形校正（Terrain-Correction）...")
-    tc_params = HashMap()
-    tc_params.put("demName", "SRTM 3Sec")
-    tc_params.put("demResamplingMethod", "BILINEAR_INTERPOLATION")
-    tc_params.put("imgResamplingMethod", "BILINEAR_INTERPOLATION")
-    tc_params.put("pixelSpacingInMeter", "10.0")
-    tc_params.put("mapProjection", "EPSG:4326")
-    tc_params.put("nodataValueAtSea", "true")
-    tc_params.put("maskOutAreaWithoutElevation", "true")
-    result = GPF.createProduct("Terrain-Correction", tc_params, filtered)
+    for op_name in ["GoldsteinPhaseFilter", "GoldsteinFilter", "eu.esa.sar.insar.gpf.GoldsteinFilterOp"]:
+        try:
+            filtered = GPF.createProduct(op_name, filter_params, deburst)
+            print(f"  Goldstein 滤波完成 (算子: {op_name})")
+            break
+        except Exception:
+            continue
+    else:
+        print("  [警告] Goldstein 滤波不可用")
+        print("  [提示] 请通过 SNAP Desktop → Tools → Plugin Manager 更新 S1-InSAR 插件")
+
+    # ========== Step 7: 地形校正（地理编码，可选）==========
+    print("[InSAR] Step 7/7: 地形校正（Terrain-Correction）...")
+    try:
+        tc_params = HashMap()
+        tc_params.put("demName", "SRTM 3Sec")
+        tc_params.put("demResamplingMethod", "BILINEAR_INTERPOLATION")
+        tc_params.put("imgResamplingMethod", "BILINEAR_INTERPOLATION")
+        tc_params.put("pixelSpacingInMeter", "10.0")
+        tc_params.put("mapProjection", "EPSG:4326")
+        tc_params.put("nodataValueAtSea", "true")
+        tc_params.put("maskOutAreaWithoutElevation", "true")
+        result = GPF.createProduct("Terrain-Correction", tc_params, filtered)
+        print("  地形校正完成")
+    except Exception as e:
+        print(f"  [警告] 地形校正失败: {e.__class__.__name__}")
+        print("  [提示] 将输出斜距坐标系的干涉结果")
+        result = filtered
+
+    print("  InSAR 处理完成")
 
     # ========== 导出 GeoTIFF ==========
     print("\n[InSAR] 导出 GeoTIFF...")
@@ -492,8 +584,8 @@ def main():
     else:
         slc_files = list_slc_scenes(data_dir)
         if len(slc_files) < 2:
-            print(f"[错误] 需要至少 2 幅 SLC 裁剪影像，当前找到 {len(slc_files)} 幅")
-            print(f"  请先通过管线下载并裁剪 SLC 影像：")
+            print(f"[错误] 需要至少 2 幅 SLC 影像，当前找到 {len(slc_files)} 幅")
+            print(f"  请先通过管线下载 SLC 影像：")
             print(f"  python scripts/06_pipeline.py --satellite sentinel1 --s1-product slc --bbox ...")
             return
 
