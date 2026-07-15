@@ -328,7 +328,7 @@ def run_insar(
     filter_params.put("windowSizeString", "3")
     filter_params.put("useCoherenceMask", "false")
 
-    for op_name in ["GoldsteinPhaseFilter", "GoldsteinFilter", "eu.esa.sar.insar.gpf.GoldsteinFilterOp"]:
+    for op_name in ["GoldsteinPhaseFiltering", "GoldsteinPhaseFilter", "GoldsteinFilter"]:
         try:
             filtered = GPF.createProduct(op_name, filter_params, deburst)
             print(f"  Goldstein 滤波完成 (算子: {op_name})")
