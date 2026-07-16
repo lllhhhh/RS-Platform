@@ -433,40 +433,8 @@ def run_insar(
     else:
         print("  [提示] snaphu 未安装，跳过相位解缠（使用缠绕相位）")
 
-    # ========== Step 8: 相位转形变（mm）==========
-    # 必须在 TC 之前执行，因为 TC 会丢失相位波段
-    print("[InSAR] Step 8/9: 相位转形变（mm）...")
-
-    WAVELENGTH_M = 0.055465763  # Sentinel-1 C 波段波长（米）
-
-    try:
-        unwrapped_bands = list(unwrapped.getBandNames())
-        print(f"  可用波段: {unwrapped_bands}")
-
-        # 找相位波段
-        phase_band = None
-        for pattern in ["unwrapped_phase", "unwrapped", "phase", "ifg"]:
-            for b in unwrapped_bands:
-                if pattern in b.lower():
-                    phase_band = b
-                    break
-            if phase_band:
-                break
-
-        if phase_band:
-            bm_params = HashMap()
-            bm_params.put("name", "displacement_mm")
-            bm_params.put("expression", f"-{phase_band} * {WAVELENGTH_M} / (4.0 * 3.14159265) * 1000.0")
-            bm_params.put("sourceBands", phase_band)
-            unwrapped = GPF.createProduct("BandMaths", bm_params, unwrapped)
-            print(f"  形变图计算完成: {phase_band} → displacement_mm (mm)")
-        else:
-            print("  [警告] 未找到相位波段，跳过形变转换")
-    except Exception as e:
-        print(f"  [警告] 形变转换失败: {e.__class__.__name__}: {e}")
-
-    # ========== Step 9: 地形校正（地理编码）==========
-    print("[InSAR] Step 9/9: 地形校正（Terrain-Correction）...")
+    # ========== Step 8: 地形校正（地理编码）==========
+    print("[InSAR] Step 8/9: 地形校正（Terrain-Correction）...")
     try:
         tc_params = HashMap()
         tc_params.put("demName", "SRTM 3Sec")
@@ -478,10 +446,23 @@ def run_insar(
         print("  [提示] 将输出斜距坐标系的干涉结果")
         result = unwrapped
 
+    # 记录相位波段名（TC 后可能丢失，需要从 TC 前的产品获取）
+    unwrapped_bands = list(unwrapped.getBandNames())
+    phase_band_name = None
+    for pattern in ["unwrapped_phase", "unwrapped", "phase", "ifg"]:
+        for b in unwrapped_bands:
+            if pattern in b.lower():
+                phase_band_name = b
+                break
+        if phase_band_name:
+            break
+    print(f"  相位波段: {phase_band_name}")
+
     print("  InSAR 处理完成")
 
     # ========== 导出 GeoTIFF ==========
     print("\n[InSAR] 导出 GeoTIFF...")
+    import numpy as np
 
     # 导出完整结果（包含相位、相干性等所有波段）
     output_prefix = output_dir / prefix
@@ -493,7 +474,6 @@ def run_insar(
     result_bands = list(result.getBandNames())
     print(f"  输出波段: {result_bands}")
 
-    # 提取各分量
     output_files = {}
 
     # 相干性
@@ -507,8 +487,8 @@ def run_insar(
         output_files["coherence"] = str(coh_path)
         print(f"  相干性图: {coh_path.name}")
 
-    # 干涉相位
-    phase_bands = [b for b in result_bands if "phase" in b.lower() or "ifg" in b.lower()]
+    # 相位图
+    phase_bands = [b for b in result_bands if "phase" in b.lower() and "unw" not in b.lower()]
     if phase_bands:
         phase_path = output_dir / f"{prefix}_phase.tif"
         phase_params = HashMap()
@@ -516,18 +496,66 @@ def run_insar(
         phase_product = GPF.createProduct("Subset", phase_params, result)
         ProductIO.writeProduct(phase_product, str(phase_path), "GeoTIFF")
         output_files["phase"] = str(phase_path)
-        print(f"  相位图: {phase_path.name}")
+        print(f"  相干相位图: {phase_path.name}")
 
-    # 形变（如果存在 displacement 波段）
-    disp_bands = [b for b in result_bands if "displacement" in b.lower() or "deformation" in b.lower()]
-    if disp_bands:
-        disp_path = output_dir / f"{prefix}_deformation.tif"
-        disp_params = HashMap()
-        disp_params.put("sourceBands", disp_bands[0])
-        disp_product = GPF.createProduct("Subset", disp_params, result)
-        ProductIO.writeProduct(disp_product, str(disp_path), "GeoTIFF")
-        output_files["deformation"] = str(disp_path)
-        print(f"  形变图: {disp_path.name}")
+    # 解缠相位图（如果有）
+    unw_bands = [b for b in result_bands if "unw" in b.lower()]
+    if unw_bands:
+        unw_path = output_dir / f"{prefix}_unwrapped_phase.tif"
+        unw_params = HashMap()
+        unw_params.put("sourceBands", unw_bands[0])
+        unw_product = GPF.createProduct("Subset", unw_params, result)
+        ProductIO.writeProduct(unw_product, str(unw_path), "GeoTIFF")
+        output_files["unwrapped_phase"] = str(unw_path)
+        print(f"  解缠相位图: {unw_path.name}")
+
+    # ========== 形变图（mm）- 从 TC 前的 unwrapped 产品计算 ==========
+    WAVELENGTH_M = 0.055465763  # Sentinel-1 C 波段波长
+
+    if phase_band_name:
+        try:
+            # 从 unwrapped 产品读取相位数据
+            phase_band_obj = unwrapped.getBand(phase_band_name)
+            pw, ph = phase_band_obj.getRasterWidth(), phase_band_obj.getRasterHeight()
+            phase_data = np.zeros(pw * ph, dtype=np.float32)
+            phase_band_obj.readPixels(0, 0, pw, ph, phase_data)
+
+            # 相位转形变: displacement_mm = -phase * wavelength / (4π) * 1000
+            disp_mm = -phase_data * WAVELENGTH_M / (4.0 * np.pi) * 1000.0
+
+            valid_count = np.count_nonzero(~np.isnan(disp_mm) & (disp_mm != 0))
+            print(f"  形变统计: min={np.nanmin(disp_mm[disp_mm!=0]):.2f}mm, max={np.nanmax(disp_mm[disp_mm!=0]):.2f}mm, 有效像素={valid_count}")
+
+            # 用 rasterio 写入形变图（参考 TC 后产品的地理信息）
+            import rasterio
+            with rasterio.open(str(result_path)) as src:
+                meta = src.meta.copy()
+                meta.update(count=1, dtype="float32", nodata=np.nan)
+
+                disp_path = output_dir / f"{prefix}_deformation_mm.tif"
+                with rasterio.open(str(disp_path), "w", **meta) as dst:
+                    # 如果尺寸不同，需要重采样
+                    if (pw, ph) == (meta["width"], meta["height"]):
+                        dst.write(disp_mm.reshape(ph, pw), 1)
+                    else:
+                        from rasterio.warp import reproject, Resampling
+                        source = disp_mm.reshape(ph, pw)
+                        destination = np.zeros((meta["height"], meta["width"]), dtype=np.float32)
+                        reproject(
+                            source=source,
+                            destination=destination,
+                            src_transform=unwrapped.getSceneGeoCoding(),
+                            src_crs="EPSG:4326",
+                            dst_transform=src.transform,
+                            dst_crs=src.crs,
+                            resampling=Resampling.bilinear,
+                        )
+                        dst.write(destination, 1)
+
+            output_files["deformation_mm"] = str(disp_path)
+            print(f"  形变图: {disp_path.name} (mm)")
+        except Exception as e:
+            print(f"  [警告] 形变图计算失败: {e.__class__.__name__}: {e}")
 
     # ========== 计算统计信息 ==========
     print("\n[InSAR] 计算形变分析统计...")
