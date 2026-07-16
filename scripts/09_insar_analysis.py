@@ -34,8 +34,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import os
 
-# 增加 JVM 堆内存（SLC 数据量大，默认内存不足）
-os.environ["JAVA_TOOL_OPTIONS"] = os.environ.get("JAVA_TOOL_OPTIONS", "") + " -Xmx8g"
+# JVM 堆内存设为 28GB（系统 31.5GB，留 3.5GB 给 OS）
+os.environ["JAVA_TOOL_OPTIONS"] = "-Xmx28g"
 
 
 def _ensure_dem_files():
