@@ -387,51 +387,20 @@ def run_insar(
         print("  [提示] 请通过 SNAP Desktop → Tools → Plugin Manager 更新 S1-InSAR 插件")
 
     # ========== Step 7: 相位解缠（SNAPHU）==========
-    import shutil
-    import subprocess
-
     print("[InSAR] Step 7/9: 相位解缠...")
-    snaphu_cmd = shutil.which("snaphu") or shutil.which("snaphu.exe")
     unwrapped = filtered  # 默认使用滤波后的结果（无解缠）
 
-    if snaphu_cmd:
-        try:
-            snaphu_dir = output_dir / "snaphu"
-            snaphu_dir.mkdir(parents=True, exist_ok=True)
-
-            # SnaphuExport
-            export_params = HashMap()
-            export_params.put("targetFolder", str(snaphu_dir))
-            export_params.put("statCostMode", "DEFO")
-            export_params.put("initMethod", "MST")
-            export_params.put("numberOfTileRows", "1")
-            export_params.put("numberOfTileCols", "1")
-            GPF.createProduct("SnaphuExport", export_params, filtered)
-
-            # 运行 snaphu
-            config_files = list(snaphu_dir.glob("*snaphu.conf"))
-            if config_files:
-                print(f"  运行 SNAPHU: {snaphu_cmd}")
-                proc = subprocess.run(
-                    [snaphu_cmd, "-f", str(config_files[0])],
-                    capture_output=True, text=True, timeout=1800,
-                )
-                if proc.returncode == 0:
-                    # SnaphuImport
-                    import_params = HashMap()
-                    import_params.put("targetFolder", str(snaphu_dir))
-                    unwrapped = GPF.createProduct("SnaphuImport", import_params, filtered)
-                    print("  相位解缠完成")
-                else:
-                    print(f"  [警告] SNAPHU 失败: {proc.stderr[:200]}")
-        except subprocess.TimeoutExpired:
-            print("  [警告] SNAPHU 超时（30分钟）")
-        except Exception as e:
-            print(f"  [警告] 相位解缠失败: {e.__class__.__name__}: {e}")
-    else:
-        print("  [提示] SNAPHU 未安装，跳过相位解缠")
-        print("  [提示] 下载: https://web.stanford.edu/group/radar/softwareandlinks/sw/snaphu/")
-        print("  [提示] 将 snaphu.exe 添加到 PATH 后重试")
+    try:
+        unwrap_params = HashMap()
+        unwrap_params.put("statCostMode", "DEFO")
+        unwrap_params.put("initMethod", "MST")
+        unwrap_params.put("numberOfTileRows", "1")
+        unwrap_params.put("numberOfTileCols", "1")
+        unwrapped = GPF.createProduct("BatchSnaphuUnwrapOp", unwrap_params, filtered)
+        print("  相位解缠完成（SNAP 内置 SNAPHU）")
+    except Exception as e:
+        print(f"  [警告] 相位解缠失败: {e.__class__.__name__}: {e}")
+        print("  [提示] 将使用缠绕相位继续处理")
 
     # ========== Step 8: 地形校正（地理编码）==========
     # NOTE: SNAP 处理 TOPS SLC 数据时，指定 mapProjection='EPSG:4326' 会触发除零 bug
