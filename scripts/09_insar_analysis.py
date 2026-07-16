@@ -367,7 +367,7 @@ def run_insar(
     print("  Deburst 完成")
 
     # ========== Step 6: Goldstein 相位滤波（可选）==========
-    print("[InSAR] Step 6/6: Goldstein 相位滤波...")
+    print("[InSAR] Step 6/9: Goldstein 相位滤波...")
     filtered = deburst
     filter_params = HashMap()
     filter_params.put("alpha", "0.5")
@@ -386,20 +386,96 @@ def run_insar(
         print("  [警告] Goldstein 滤波不可用")
         print("  [提示] 请通过 SNAP Desktop → Tools → Plugin Manager 更新 S1-InSAR 插件")
 
-    # ========== Step 7: 地形校正（地理编码）==========
+    # ========== Step 7: 相位解缠（SNAPHU）==========
+    import shutil
+    import subprocess
+
+    print("[InSAR] Step 7/9: 相位解缠...")
+    snaphu_cmd = shutil.which("snaphu") or shutil.which("snaphu.exe")
+    unwrapped = filtered  # 默认使用滤波后的结果（无解缠）
+
+    if snaphu_cmd:
+        try:
+            snaphu_dir = output_dir / "snaphu"
+            snaphu_dir.mkdir(parents=True, exist_ok=True)
+
+            # SnaphuExport
+            export_params = HashMap()
+            export_params.put("targetFolder", str(snaphu_dir))
+            export_params.put("statCostMode", "DEFO")
+            export_params.put("initMethod", "MST")
+            export_params.put("numberOfTileRows", "1")
+            export_params.put("numberOfTileCols", "1")
+            GPF.createProduct("SnaphuExport", export_params, filtered)
+
+            # 运行 snaphu
+            config_files = list(snaphu_dir.glob("*snaphu.conf"))
+            if config_files:
+                print(f"  运行 SNAPHU: {snaphu_cmd}")
+                proc = subprocess.run(
+                    [snaphu_cmd, "-f", str(config_files[0])],
+                    capture_output=True, text=True, timeout=1800,
+                )
+                if proc.returncode == 0:
+                    # SnaphuImport
+                    import_params = HashMap()
+                    import_params.put("targetFolder", str(snaphu_dir))
+                    unwrapped = GPF.createProduct("SnaphuImport", import_params, filtered)
+                    print("  相位解缠完成")
+                else:
+                    print(f"  [警告] SNAPHU 失败: {proc.stderr[:200]}")
+        except subprocess.TimeoutExpired:
+            print("  [警告] SNAPHU 超时（30分钟）")
+        except Exception as e:
+            print(f"  [警告] 相位解缠失败: {e.__class__.__name__}: {e}")
+    else:
+        print("  [提示] SNAPHU 未安装，跳过相位解缠")
+        print("  [提示] 下载: https://web.stanford.edu/group/radar/softwareandlinks/sw/snaphu/")
+        print("  [提示] 将 snaphu.exe 添加到 PATH 后重试")
+
+    # ========== Step 8: 地形校正（地理编码）==========
     # NOTE: SNAP 处理 TOPS SLC 数据时，指定 mapProjection='EPSG:4326' 会触发除零 bug
-    # 解决方案: TC 使用默认投影，然后用 GDAL 重投影到 EPSG:4326
-    print("[InSAR] Step 7/7: 地形校正（Terrain-Correction）...")
+    # 解决方案: TC 使用默认投影，然后用 rasterio 重投影到 EPSG:4326
+    print("[InSAR] Step 8/9: 地形校正（Terrain-Correction）...")
     try:
         tc_params = HashMap()
         tc_params.put("demName", "SRTM 3Sec")
         tc_params.put("pixelSpacingInMeter", "100.0")
-        result = GPF.createProduct("Terrain-Correction", tc_params, filtered)
+        result = GPF.createProduct("Terrain-Correction", tc_params, unwrapped)
         print("  地形校正完成")
     except Exception as e:
         print(f"  [警告] 地形校正失败: {e.__class__.__name__}: {e}")
         print("  [提示] 将输出斜距坐标系的干涉结果")
-        result = filtered
+        result = unwrapped
+
+    # ========== Step 9: 相位转形变（mm）==========
+    print("[InSAR] Step 9/9: 相位转形变（mm）...")
+
+    # Sentinel-1 C 波段波长（米）
+    WAVELENGTH_M = 0.055465763
+
+    try:
+        # 找到相位波段名
+        result_bands = list(result.getBandNames())
+        phase_band = None
+        for b in result_bands:
+            if "phase" in b.lower() or "ifg" in b.lower():
+                phase_band = b
+                break
+
+        if phase_band:
+            # 使用 Band Maths: displacement_mm = -phase * wavelength / (4 * pi) * 1000
+            bm_params = HashMap()
+            bm_params.put("name", "displacement_mm")
+            bm_params.put("expression", f"-{phase_band} * {WAVELENGTH_M} / (4 * PI) * 1000")
+            bm_params.put("unit", "mm")
+            result = GPF.createProduct("BandMaths", bm_params, result)
+            print(f"  形变图计算完成（波段: {phase_band}）")
+            print(f"  公式: -phase × {WAVELENGTH_M}m / (4π) × 1000 → mm")
+        else:
+            print("  [警告] 未找到相位波段，跳过形变转换")
+    except Exception as e:
+        print(f"  [警告] 形变转换失败: {e.__class__.__name__}: {e}")
 
     print("  InSAR 处理完成")
 
