@@ -433,10 +433,40 @@ def run_insar(
     else:
         print("  [提示] snaphu 未安装，跳过相位解缠（使用缠绕相位）")
 
-    # ========== Step 8: 地形校正（地理编码）==========
-    # NOTE: SNAP 处理 TOPS SLC 数据时，指定 mapProjection='EPSG:4326' 会触发除零 bug
-    # 解决方案: TC 使用默认投影，然后用 rasterio 重投影到 EPSG:4326
-    print("[InSAR] Step 8/9: 地形校正（Terrain-Correction）...")
+    # ========== Step 8: 相位转形变（mm）==========
+    # 必须在 TC 之前执行，因为 TC 会丢失相位波段
+    print("[InSAR] Step 8/9: 相位转形变（mm）...")
+
+    WAVELENGTH_M = 0.055465763  # Sentinel-1 C 波段波长（米）
+
+    try:
+        unwrapped_bands = list(unwrapped.getBandNames())
+        print(f"  可用波段: {unwrapped_bands}")
+
+        # 找相位波段
+        phase_band = None
+        for pattern in ["unwrapped_phase", "unwrapped", "phase", "ifg"]:
+            for b in unwrapped_bands:
+                if pattern in b.lower():
+                    phase_band = b
+                    break
+            if phase_band:
+                break
+
+        if phase_band:
+            bm_params = HashMap()
+            bm_params.put("name", "displacement_mm")
+            bm_params.put("expression", f"-{phase_band} * {WAVELENGTH_M} / (4.0 * 3.14159265) * 1000.0")
+            bm_params.put("sourceBands", phase_band)
+            unwrapped = GPF.createProduct("BandMaths", bm_params, unwrapped)
+            print(f"  形变图计算完成: {phase_band} → displacement_mm (mm)")
+        else:
+            print("  [警告] 未找到相位波段，跳过形变转换")
+    except Exception as e:
+        print(f"  [警告] 形变转换失败: {e.__class__.__name__}: {e}")
+
+    # ========== Step 9: 地形校正（地理编码）==========
+    print("[InSAR] Step 9/9: 地形校正（Terrain-Correction）...")
     try:
         tc_params = HashMap()
         tc_params.put("demName", "SRTM 3Sec")
@@ -447,40 +477,6 @@ def run_insar(
         print(f"  [警告] 地形校正失败: {e.__class__.__name__}: {e}")
         print("  [提示] 将输出斜距坐标系的干涉结果")
         result = unwrapped
-
-    # ========== Step 9: 相位转形变（mm）==========
-    print("[InSAR] Step 9/9: 相位转形变（mm）...")
-
-    # Sentinel-1 C 波段波长（米）
-    WAVELENGTH_M = 0.055465763
-
-    try:
-        result_bands = list(result.getBandNames())
-        print(f"  可用波段: {result_bands}")
-
-        # 找相位波段（优先匹配 unwrapped_phase，其次 phase，最后 ifg）
-        phase_band = None
-        for pattern in ["unwrapped", "phase", "ifg"]:
-            for b in result_bands:
-                if pattern in b.lower():
-                    phase_band = b
-                    break
-            if phase_band:
-                break
-
-        if phase_band:
-            # 相位转形变: displacement_mm = -phase * wavelength / (4π) * 1000
-            bm_params = HashMap()
-            bm_params.put("name", "displacement_mm")
-            bm_params.put("expression", f"-{phase_band} * {WAVELENGTH_M} / (4.0 * 3.14159265) * 1000.0")
-            bm_params.put("sourceBands", phase_band)
-            result = GPF.createProduct("BandMaths", bm_params, result)
-            print(f"  形变图计算完成")
-            print(f"  波段: {phase_band} → displacement_mm (mm)")
-        else:
-            print("  [警告] 未找到相位波段，跳过形变转换")
-    except Exception as e:
-        print(f"  [警告] 形变转换失败: {e.__class__.__name__}: {e}")
 
     print("  InSAR 处理完成")
 
