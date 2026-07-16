@@ -386,21 +386,52 @@ def run_insar(
         print("  [警告] Goldstein 滤波不可用")
         print("  [提示] 请通过 SNAP Desktop → Tools → Plugin Manager 更新 S1-InSAR 插件")
 
-    # ========== Step 7: 相位解缠（SNAPHU）==========
+    # ========== Step 7: 相位解缠（可选，需外部 snaphu）==========
     print("[InSAR] Step 7/9: 相位解缠...")
+    import shutil
+    import subprocess
+
+    # 检测 snaphu 路径
+    snaphu_cmd = shutil.which("snaphu") or shutil.which("snaphu.exe")
+    if not snaphu_cmd:
+        # 检查 SNAP 附带的 snaphu
+        snap_snaphu = Path(r"D:\esa-snap\snaphu-v2.0.4_win64\bin\snaphu.exe")
+        if snap_snaphu.exists():
+            snaphu_cmd = str(snap_snaphu)
     unwrapped = filtered  # 默认使用滤波后的结果（无解缠）
 
-    try:
-        unwrap_params = HashMap()
-        unwrap_params.put("statCostMode", "DEFO")
-        unwrap_params.put("initMethod", "MST")
-        unwrap_params.put("numberOfTileRows", "1")
-        unwrap_params.put("numberOfTileCols", "1")
-        unwrapped = GPF.createProduct("BatchSnaphuUnwrapOp", unwrap_params, filtered)
-        print("  相位解缠完成（SNAP 内置 SNAPHU）")
-    except Exception as e:
-        print(f"  [警告] 相位解缠失败: {e.__class__.__name__}: {e}")
-        print("  [提示] 将使用缠绕相位继续处理")
+    if snaphu_cmd:
+        try:
+            snaphu_dir = output_dir / "snaphu"
+            snaphu_dir.mkdir(parents=True, exist_ok=True)
+
+            # SnaphuExport
+            export_params = HashMap()
+            export_params.put("targetFolder", str(snaphu_dir))
+            export_params.put("statCostMode", "DEFO")
+            export_params.put("initMethod", "MST")
+            export_params.put("numberOfTileRows", "1")
+            export_params.put("numberOfTileCols", "1")
+            GPF.createProduct("SnaphuExport", export_params, filtered)
+
+            config_files = list(snaphu_dir.glob("*snaphu.conf"))
+            if config_files:
+                print(f"  运行 SNAPHU: {snaphu_cmd}")
+                proc = subprocess.run(
+                    [snaphu_cmd, "-f", str(config_files[0])],
+                    capture_output=True, text=True, timeout=1800,
+                )
+                if proc.returncode == 0:
+                    import_params = HashMap()
+                    import_params.put("targetFolder", str(snaphu_dir))
+                    unwrapped = GPF.createProduct("SnaphuImport", import_params, filtered)
+                    print("  相位解缠完成")
+                else:
+                    print(f"  [警告] SNAPHU 失败: {proc.stderr[:200]}")
+        except Exception as e:
+            print(f"  [警告] 相位解缠失败: {e.__class__.__name__}: {e}")
+    else:
+        print("  [提示] snaphu 未安装，跳过相位解缠（使用缠绕相位）")
 
     # ========== Step 8: 地形校正（地理编码）==========
     # NOTE: SNAP 处理 TOPS SLC 数据时，指定 mapProjection='EPSG:4326' 会触发除零 bug
@@ -424,23 +455,28 @@ def run_insar(
     WAVELENGTH_M = 0.055465763
 
     try:
-        # 找到相位波段名
         result_bands = list(result.getBandNames())
+        print(f"  可用波段: {result_bands}")
+
+        # 找相位波段（优先匹配 unwrapped_phase，其次 phase，最后 ifg）
         phase_band = None
-        for b in result_bands:
-            if "phase" in b.lower() or "ifg" in b.lower():
-                phase_band = b
+        for pattern in ["unwrapped", "phase", "ifg"]:
+            for b in result_bands:
+                if pattern in b.lower():
+                    phase_band = b
+                    break
+            if phase_band:
                 break
 
         if phase_band:
-            # 使用 Band Maths: displacement_mm = -phase * wavelength / (4 * pi) * 1000
+            # 相位转形变: displacement_mm = -phase * wavelength / (4π) * 1000
             bm_params = HashMap()
             bm_params.put("name", "displacement_mm")
-            bm_params.put("expression", f"-{phase_band} * {WAVELENGTH_M} / (4 * PI) * 1000")
-            bm_params.put("unit", "mm")
+            bm_params.put("expression", f"-{phase_band} * {WAVELENGTH_M} / (4.0 * 3.14159265) * 1000.0")
+            bm_params.put("sourceBands", phase_band)
             result = GPF.createProduct("BandMaths", bm_params, result)
-            print(f"  形变图计算完成（波段: {phase_band}）")
-            print(f"  公式: -phase × {WAVELENGTH_M}m / (4π) × 1000 → mm")
+            print(f"  形变图计算完成")
+            print(f"  波段: {phase_band} → displacement_mm (mm)")
         else:
             print("  [警告] 未找到相位波段，跳过形变转换")
     except Exception as e:
