@@ -527,26 +527,23 @@ def run_insar(
             import rasterio
             from rasterio.windows import Window
 
-            # 从已导出的文件获取地理参考信息
-            tc_meta = None
-            ref_file = output_files.get("coherence") or output_files.get("phase")
-            if ref_file and Path(ref_file).exists():
-                with rasterio.open(ref_file) as src:
-                    tc_meta = src.meta.copy()
-                    tc_meta.update(count=1, dtype="float32", nodata=np.nan)
-            else:
-                print("  [警告] 无法获取地理参考信息，跳过形变图")
-
-            if tc_meta is None:
-                raise RuntimeError("无法获取地理参考信息")
-
             # 用 SNAP API 分块读取相位数据并计算形变
             phase_band_obj = unwrapped.getBand(phase_band_name)
             pw, ph = phase_band_obj.getRasterWidth(), phase_band_obj.getRasterHeight()
             print(f"  相位波段尺寸: {pw}x{ph}")
 
+            # 用相位波段尺寸创建输出文件（无地理参考，后续重投影）
+            disp_meta = {
+                "driver": "GTiff",
+                "dtype": "float32",
+                "width": pw,
+                "height": ph,
+                "count": 1,
+                "nodata": float("nan"),
+            }
+
             disp_path = output_dir / f"{prefix}_deformation_mm.tif"
-            with rasterio.open(str(disp_path), "w", **tc_meta) as dst:
+            with rasterio.open(str(disp_path), "w", **disp_meta) as dst:
                 chunk_size = 512
                 for ji in range(0, ph, chunk_size):
                     for jj in range(0, pw, chunk_size):
