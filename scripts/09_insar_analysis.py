@@ -477,19 +477,13 @@ def run_insar(
     print("\n[InSAR] 导出 GeoTIFF...")
     import numpy as np
 
-    # 导出完整结果（包含相位、相干性等所有波段）
     output_prefix = output_dir / prefix
-    result_path = output_dir / f"{prefix}_full.tif"
-    ProductIO.writeProduct(result, str(result_path), "GeoTIFF")
-    print(f"  完整产品: {result_path.name}")
-
-    # 获取结果波段信息
-    result_bands = list(result.getBandNames())
-    print(f"  输出波段: {result_bands}")
-
     output_files = {}
 
-    # 相干性
+    # 1. 导出相干性图（从 TC 后的产品）
+    result_bands = list(result.getBandNames())
+    print(f"  TC 后波段: {result_bands}")
+
     coherence_bands = [b for b in result_bands if "coh" in b.lower() or "coherence" in b.lower()]
     if coherence_bands:
         coh_path = output_dir / f"{prefix}_coherence.tif"
@@ -498,10 +492,11 @@ def run_insar(
         coh_product = GPF.createProduct("Subset", coh_params, result)
         ProductIO.writeProduct(coh_product, str(coh_path), "GeoTIFF")
         output_files["coherence"] = str(coh_path)
-        print(f"  相干性图: {coh_path.name}")
+        size_mb = coh_path.stat().st_size / (1024 * 1024)
+        print(f"  相干性图: {coh_path.name} ({size_mb:.1f} MB)")
 
-    # 相位图
-    phase_bands = [b for b in result_bands if "phase" in b.lower() and "unw" not in b.lower()]
+    # 2. 导出相位图
+    phase_bands = [b for b in result_bands if "phase" in b.lower()]
     if phase_bands:
         phase_path = output_dir / f"{prefix}_phase.tif"
         phase_params = HashMap()
@@ -509,9 +504,10 @@ def run_insar(
         phase_product = GPF.createProduct("Subset", phase_params, result)
         ProductIO.writeProduct(phase_product, str(phase_path), "GeoTIFF")
         output_files["phase"] = str(phase_path)
-        print(f"  相干相位图: {phase_path.name}")
+        size_mb = phase_path.stat().st_size / (1024 * 1024)
+        print(f"  相位图: {phase_path.name} ({size_mb:.1f} MB)")
 
-    # 解缠相位图（如果有）
+    # 3. 导出解缠相位图
     unw_bands = [b for b in result_bands if "unw" in b.lower()]
     if unw_bands:
         unw_path = output_dir / f"{prefix}_unwrapped_phase.tif"
@@ -520,53 +516,56 @@ def run_insar(
         unw_product = GPF.createProduct("Subset", unw_params, result)
         ProductIO.writeProduct(unw_product, str(unw_path), "GeoTIFF")
         output_files["unwrapped_phase"] = str(unw_path)
-        print(f"  解缠相位图: {unw_path.name}")
+        size_mb = unw_path.stat().st_size / (1024 * 1024)
+        print(f"  解缠相位图: {unw_path.name} ({size_mb:.1f} MB)")
 
-    # ========== 形变图（mm）- 从 TC 前的 unwrapped 产品计算 ==========
-    WAVELENGTH_M = 0.055465763  # Sentinel-1 C 波段波长
+    # 4. 形变图（mm）— 先用 SNAP 导出相位，再用 rasterio 分块计算
+    WAVELENGTH_M = 0.055465763
 
     if phase_band_name:
         try:
-            # 从 unwrapped 产品读取相位数据
-            phase_band_obj = unwrapped.getBand(phase_band_name)
-            pw, ph = phase_band_obj.getRasterWidth(), phase_band_obj.getRasterHeight()
-            phase_data = np.zeros(pw * ph, dtype=np.float32)
-            phase_band_obj.readPixels(0, 0, pw, ph, phase_data)
+            # 用 SNAP 导出相位波段为 GeoTIFF（避免 OOM）
+            phase_tif_path = output_dir / f"{prefix}_phase_raw.tif"
+            unwrapped_bands_list = list(unwrapped.getBandNames())
+            if phase_band_name in unwrapped_bands_list:
+                phase_sub_params = HashMap()
+                phase_sub_params.put("sourceBands", phase_band_name)
+                phase_sub_product = GPF.createProduct("Subset", phase_sub_params, unwrapped)
+                ProductIO.writeProduct(phase_sub_product, str(phase_tif_path), "GeoTIFF")
+                print(f"  相位原始数据: {phase_tif_path.name}")
 
-            # 相位转形变: displacement_mm = -phase * wavelength / (4π) * 1000
-            disp_mm = -phase_data * WAVELENGTH_M / (4.0 * np.pi) * 1000.0
+                # 用 rasterio 分块读取并计算形变
+                import rasterio
+                from rasterio.windows import Window
 
-            valid_count = np.count_nonzero(~np.isnan(disp_mm) & (disp_mm != 0))
-            print(f"  形变统计: min={np.nanmin(disp_mm[disp_mm!=0]):.2f}mm, max={np.nanmax(disp_mm[disp_mm!=0]):.2f}mm, 有效像素={valid_count}")
+                with rasterio.open(str(phase_tif_path)) as src:
+                    meta = src.meta.copy()
+                    meta.update(count=1, dtype="float32", nodata=np.nan)
 
-            # 用 rasterio 写入形变图（参考 TC 后产品的地理信息）
-            import rasterio
-            with rasterio.open(str(result_path)) as src:
-                meta = src.meta.copy()
-                meta.update(count=1, dtype="float32", nodata=np.nan)
+                    disp_path = output_dir / f"{prefix}_deformation_mm.tif"
+                    with rasterio.open(str(disp_path), "w", **meta) as dst:
+                        # 分块处理，每块 1024x1024
+                        chunk_size = 1024
+                        for ji in range(0, src.height, chunk_size):
+                            for jj in range(0, src.width, chunk_size):
+                                h = min(chunk_size, src.height - ji)
+                                w = min(chunk_size, src.width - jj)
+                                window = Window(col_off=jj, row_off=ji, width=w, height=h)
+                                phase_data = src.read(1, window=window)
 
-                disp_path = output_dir / f"{prefix}_deformation_mm.tif"
-                with rasterio.open(str(disp_path), "w", **meta) as dst:
-                    # 如果尺寸不同，需要重采样
-                    if (pw, ph) == (meta["width"], meta["height"]):
-                        dst.write(disp_mm.reshape(ph, pw), 1)
-                    else:
-                        from rasterio.warp import reproject, Resampling
-                        source = disp_mm.reshape(ph, pw)
-                        destination = np.zeros((meta["height"], meta["width"]), dtype=np.float32)
-                        reproject(
-                            source=source,
-                            destination=destination,
-                            src_transform=unwrapped.getSceneGeoCoding(),
-                            src_crs="EPSG:4326",
-                            dst_transform=src.transform,
-                            dst_crs=src.crs,
-                            resampling=Resampling.bilinear,
-                        )
-                        dst.write(destination, 1)
+                                # 相位转形变: -phase * λ / (4π) * 1000
+                                valid = ~np.isnan(phase_data) & (phase_data != 0)
+                                disp_data = np.full_like(phase_data, np.nan, dtype=np.float32)
+                                disp_data[valid] = -phase_data[valid] * WAVELENGTH_M / (4.0 * np.pi) * 1000.0
 
-            output_files["deformation_mm"] = str(disp_path)
-            print(f"  形变图: {disp_path.name} (mm)")
+                                dst.write(disp_data, 1, window=window)
+
+                    output_files["deformation_mm"] = str(disp_path)
+                    size_mb = disp_path.stat().st_size / (1024 * 1024)
+                    print(f"  形变图: {disp_path.name} ({size_mb:.1f} MB)")
+
+                # 清理临时相位文件
+                phase_tif_path.unlink(missing_ok=True)
         except Exception as e:
             print(f"  [警告] 形变图计算失败: {e.__class__.__name__}: {e}")
 
