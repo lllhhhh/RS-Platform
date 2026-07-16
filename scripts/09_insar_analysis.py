@@ -34,6 +34,37 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import os
 
+# 增加 JVM 堆内存（SLC 数据量大，默认内存不足）
+os.environ["JAVA_TOOL_OPTIONS"] = os.environ.get("JAVA_TOOL_OPTIONS", "") + " -Xmx8g"
+
+
+def _ensure_dem_files():
+    """检查并预下载所需的 SRTM DEM 文件。"""
+    import requests
+
+    dem_dir = Path.home() / ".snap" / "auxdata" / "dem" / "SRTM90" / "tiff"
+    dem_dir.mkdir(parents=True, exist_ok=True)
+
+    required = ["srtm_59_07.zip", "srtm_60_07.zip", "srtm_60_08.zip"]
+    base_url = "https://download.esa.int/step/auxdata/dem/SRTM90/tiff"
+
+    for fname in required:
+        fpath = dem_dir / fname
+        if fpath.exists() and fpath.stat().st_size > 1000:
+            continue
+        print(f"  [DEM] 下载 {fname}...")
+        try:
+            r = requests.get(f"{base_url}/{fname}", timeout=120, stream=True)
+            if r.status_code == 200:
+                with open(fpath, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=1024 * 1024):
+                        f.write(chunk)
+                print(f"  [DEM] {fname} 下载完成 ({fpath.stat().st_size // (1024*1024)} MB)")
+            else:
+                print(f"  [DEM] {fname} 下载失败: HTTP {r.status_code}")
+        except Exception as e:
+            print(f"  [DEM] {fname} 下载失败: {e}")
+
 
 def _ensure_java_home() -> bool:
     """自动检测并设置 JAVA_HOME（ESA SNAP JRE）。"""
@@ -435,6 +466,7 @@ def run_insar(
 
     # ========== Step 8: 地形相位去除（Topographic Phase Removal）==========
     print("[InSAR] Step 9/10: 地形相位去除（DEM）...")
+    _ensure_dem_files()
     try:
         topo_params = HashMap()
         topo_params.put("orbitDegree", "3")
