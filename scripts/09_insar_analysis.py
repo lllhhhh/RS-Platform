@@ -74,7 +74,7 @@ def _ensure_dem_files():
                 print(f"  [DEM] {name}.zip 下载失败: {e}")
                 continue
 
-        # 解压 tif
+        # 解压 tif（保留 zip，SNAP 需要它）
         if not tif_path.exists():
             try:
                 with zipfile.ZipFile(zip_path, "r") as zf:
