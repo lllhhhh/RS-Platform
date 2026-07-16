@@ -222,7 +222,7 @@ def run_insar(
     print(f"{'=' * 60}")
 
     # ========== Step 0: 确保轨道文件可用 ==========
-    print("\n[InSAR] Step 0/7: 检查轨道文件...")
+    print("\n[InSAR] Step 1/10: 检查轨道文件...")
     from scripts.orbit_downloader import ensure_orbit_files
     import re
 
@@ -252,7 +252,7 @@ def run_insar(
             print("  [警告] 未能获取轨道文件，InSAR 精度可能受影响")
 
     # ========== Step 1: 读取主从影像 ==========
-    print("\n[InSAR] Step 1/6: 读取主从影像...")
+    print("\n[InSAR] Step 2/10: 读取主从影像...")
     if is_safe:
         # SAFE 格式：读取 manifest.safe
         manifest_master = master_path / "manifest.safe"
@@ -277,7 +277,7 @@ def run_insar(
         print(f"  匹配 {pol_upper} 极化波段: {matched_bands[:6]}...")
 
     # ========== Step 2: 应用轨道文件 ==========
-    print("[InSAR] Step 2/6: 应用轨道文件...")
+    print("[InSAR] Step 3/10: 应用轨道文件...")
     orbit_params = HashMap()
     orbit_params.put("orbitType", "Sentinel Precise (Auto Download)")
     orbit_params.put("polyDegree", "3")
@@ -308,7 +308,7 @@ def run_insar(
     # ========== Step 3: TOPS Split（选择子条带）==========
     subswath = "IW2"
     pol_upper = polarization.upper()
-    print(f"[InSAR] Step 3/6: TOPS Split（子条带: {subswath}, 极化: {pol_upper}）...")
+    print(f"[InSAR] Step 4/10: TOPS Split（子条带: {subswath}, 极化: {pol_upper}）...")
 
     split_params = HashMap()
     split_params.put("subswath", subswath)
@@ -320,7 +320,7 @@ def run_insar(
     print(f"  主影像 Split 波段: {list(master_split.getBandNames())}")
 
     # ========== Step 4: Back-Geocoding + 干涉图 ==========
-    print("[InSAR] Step 4/6: Back-Geocoding + 干涉图生成...")
+    print("[InSAR] Step 5/10: Back-Geocoding + 干涉图生成...")
 
     bg_params = HashMap()
     bg_params.put("demName", "SRTM 3Sec")
@@ -360,14 +360,14 @@ def run_insar(
     interferogram = GPF.createProduct("Interferogram", ifg_params, coregistered)
 
     # ========== Step 5: TOPS Deburst ==========
-    print("[InSAR] Step 5/6: TOPS Deburst...")
+    print("[InSAR] Step 6/10: TOPS Deburst...")
     deburst_params = HashMap()
     deburst_params.put("selectedPolarisations", pol_upper)
     deburst = GPF.createProduct("TOPSAR-Deburst", deburst_params, interferogram)
     print("  Deburst 完成")
 
     # ========== Step 6: Goldstein 相位滤波（可选）==========
-    print("[InSAR] Step 6/9: Goldstein 相位滤波...")
+    print("[InSAR] Step 7/10: Goldstein 相位滤波...")
     filtered = deburst
     filter_params = HashMap()
     filter_params.put("alpha", "0.5")
@@ -387,7 +387,7 @@ def run_insar(
         print("  [提示] 请通过 SNAP Desktop → Tools → Plugin Manager 更新 S1-InSAR 插件")
 
     # ========== Step 7: 相位解缠（可选，需外部 snaphu）==========
-    print("[InSAR] Step 7/9: 相位解缠...")
+    print("[InSAR] Step 8/10: 相位解缠...")
     import shutil
     import subprocess
 
@@ -433,8 +433,21 @@ def run_insar(
     else:
         print("  [提示] snaphu 未安装，跳过相位解缠（使用缠绕相位）")
 
-    # ========== Step 8: 地形校正（地理编码）==========
-    print("[InSAR] Step 8/9: 地形校正（Terrain-Correction）...")
+    # ========== Step 8: 地形相位去除（Topographic Phase Removal）==========
+    print("[InSAR] Step 9/10: 地形相位去除（DEM）...")
+    try:
+        topo_params = HashMap()
+        topo_params.put("orbitDegree", "3")
+        topo_params.put("demName", "SRTM 3Sec")
+        topo_params.put("demResamplingMethod", "BILINEAR_INTERPOLATION")
+        unwrapped = GPF.createProduct("TopoPhaseRemoval", topo_params, unwrapped)
+        print("  地形相位去除完成（SRTM 3Sec DEM）")
+    except Exception as e:
+        print(f"  [警告] 地形相位去除失败: {e.__class__.__name__}: {e}")
+        print("  [提示] 形变结果可能包含地形相位分量")
+
+    # ========== Step 9: 地形校正（地理编码）==========
+    print("[InSAR] Step 10/10: 地形校正（Terrain-Correction）...")
     try:
         tc_params = HashMap()
         tc_params.put("demName", "SRTM 3Sec")
