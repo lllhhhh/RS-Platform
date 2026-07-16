@@ -519,63 +519,60 @@ def run_insar(
         size_mb = unw_path.stat().st_size / (1024 * 1024)
         print(f"  解缠相位图: {unw_path.name} ({size_mb:.1f} MB)")
 
-    # 4. 形变图（mm）— 导出完整 unwrapped 产品，再用 rasterio 提取相位并计算
+    # 4. 形变图（mm）— 直接用 SNAP API 分块读取相位，numpy 计算形变
     WAVELENGTH_M = 0.055465763
 
     if phase_band_name:
         try:
-            # 导出完整 unwrapped 产品（包含相位波段）
-            unwrapped_tif = output_dir / f"{prefix}_unwrapped_full.tif"
-            ProductIO.writeProduct(unwrapped, str(unwrapped_tif), "GeoTIFF")
-            print(f"  解缠产品导出: {unwrapped_tif.name}")
-
-            # 用 rasterio 读取相位波段并分块计算形变
             import rasterio
             from rasterio.windows import Window
 
-            with rasterio.open(str(unwrapped_tif)) as src:
-                # 找到相位波段索引
-                phase_idx = None
-                for i, desc in enumerate(src.descriptions, 1):
-                    if desc and phase_band_name in desc:
-                        phase_idx = i
-                        break
-                if phase_idx is None:
-                    # 回退：查找包含 phase 的波段
-                    for i, desc in enumerate(src.descriptions, 1):
-                        if desc and "phase" in desc.lower():
-                            phase_idx = i
-                            break
-                if phase_idx is None:
-                    phase_idx = 1  # 最后回退
+            # 从已导出的文件获取地理参考信息
+            tc_meta = None
+            ref_file = output_files.get("coherence") or output_files.get("phase")
+            if ref_file and Path(ref_file).exists():
+                with rasterio.open(ref_file) as src:
+                    tc_meta = src.meta.copy()
+                    tc_meta.update(count=1, dtype="float32", nodata=np.nan)
+            else:
+                print("  [警告] 无法获取地理参考信息，跳过形变图")
 
-                print(f"  相位波段索引: {phase_idx} ({src.descriptions[phase_idx-1]})")
+            if tc_meta is None:
+                raise RuntimeError("无法获取地理参考信息")
 
-                meta = src.meta.copy()
-                meta.update(count=1, dtype="float32", nodata=np.nan)
+            # 用 SNAP API 分块读取相位数据并计算形变
+            phase_band_obj = unwrapped.getBand(phase_band_name)
+            pw, ph = phase_band_obj.getRasterWidth(), phase_band_obj.getRasterHeight()
+            print(f"  相位波段尺寸: {pw}x{ph}")
 
-                disp_path = output_dir / f"{prefix}_deformation_mm.tif"
-                with rasterio.open(str(disp_path), "w", **meta) as dst:
-                    chunk_size = 1024
-                    for ji in range(0, src.height, chunk_size):
-                        for jj in range(0, src.width, chunk_size):
-                            h = min(chunk_size, src.height - ji)
-                            w = min(chunk_size, src.width - jj)
-                            window = Window(col_off=jj, row_off=ji, width=w, height=h)
-                            phase_data = src.read(phase_idx, window=window)
+            disp_path = output_dir / f"{prefix}_deformation_mm.tif"
+            with rasterio.open(str(disp_path), "w", **tc_meta) as dst:
+                chunk_size = 512
+                for ji in range(0, ph, chunk_size):
+                    for jj in range(0, pw, chunk_size):
+                        h = min(chunk_size, ph - ji)
+                        w = min(chunk_size, pw - jj)
 
-                            valid = ~np.isnan(phase_data) & (phase_data != 0)
-                            disp_data = np.full_like(phase_data, np.nan, dtype=np.float32)
-                            disp_data[valid] = -phase_data[valid] * WAVELENGTH_M / (4.0 * np.pi) * 1000.0
+                        # SNAP API 分块读取
+                        chunk = np.zeros(w * h, dtype=np.float32)
+                        phase_band_obj.readPixels(jj, ji, w, h, chunk)
+                        chunk = chunk.reshape(h, w)
 
-                            dst.write(disp_data, 1, window=window)
+                        valid = ~np.isnan(chunk) & (chunk != 0)
+                        disp_chunk = np.full((h, w), np.nan, dtype=np.float32)
+                        disp_chunk[valid] = -chunk[valid] * WAVELENGTH_M / (4.0 * np.pi) * 1000.0
 
-                output_files["deformation_mm"] = str(disp_path)
-                size_mb = disp_path.stat().st_size / (1024 * 1024)
-                print(f"  形变图: {disp_path.name} ({size_mb:.1f} MB)")
+                        window = Window(col_off=jj, row_off=ji, width=w, height=h)
+                        dst.write(disp_chunk, 1, window=window)
 
-            # 清理临时文件
-            unwrapped_tif.unlink(missing_ok=True)
+                    # 进度
+                    pct = min(100, int((ji + chunk_size) / ph * 100))
+                    print(f"\r  形变计算进度: {pct}%", end="", flush=True)
+                print()
+
+            output_files["deformation_mm"] = str(disp_path)
+            size_mb = disp_path.stat().st_size / (1024 * 1024)
+            print(f"  形变图: {disp_path.name} ({size_mb:.1f} MB)")
         except Exception as e:
             print(f"  [警告] 形变图计算失败: {e.__class__.__name__}: {e}")
 
