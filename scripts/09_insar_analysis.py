@@ -39,11 +39,11 @@ os.environ["JAVA_TOOL_OPTIONS"] = "-Xmx28g"
 
 
 def _ensure_dem_files():
-    """检查并预下载所需的 SRTM DEM 文件。"""
-    import zipfile
+    """检查并预下载所需的 SRTM DEM 文件到 SRTM 3Sec 目录。"""
     import requests
 
-    dem_dir = Path.home() / ".snap" / "auxdata" / "dem" / "SRTM90" / "tiff"
+    # SNAP 使用 SRTM 3Sec 目录
+    dem_dir = Path.home() / ".snap" / "auxdata" / "dem" / "SRTM 3Sec"
     dem_dir.mkdir(parents=True, exist_ok=True)
 
     required = ["srtm_59_07", "srtm_60_07", "srtm_60_08"]
@@ -51,37 +51,24 @@ def _ensure_dem_files():
 
     for name in required:
         zip_path = dem_dir / f"{name}.zip"
-        tif_path = dem_dir / f"{name}.tif"
 
-        # 如果 tif 已存在，跳过
-        if tif_path.exists() and tif_path.stat().st_size > 1000:
+        # 如果 zip 已存在且大小正常，跳过
+        if zip_path.exists() and zip_path.stat().st_size > 1000000:
             continue
 
         # 下载 zip
-        if not zip_path.exists() or zip_path.stat().st_size < 1000:
-            print(f"  [DEM] 下载 {name}.zip...")
-            try:
-                r = requests.get(f"{base_url}/{name}.zip", timeout=120, stream=True)
-                if r.status_code == 200:
-                    with open(zip_path, "wb") as f:
-                        for chunk in r.iter_content(chunk_size=1024 * 1024):
-                            f.write(chunk)
-                    print(f"  [DEM] {name}.zip 下载完成 ({zip_path.stat().st_size // (1024*1024)} MB)")
-                else:
-                    print(f"  [DEM] {name}.zip 下载失败: HTTP {r.status_code}")
-                    continue
-            except Exception as e:
-                print(f"  [DEM] {name}.zip 下载失败: {e}")
-                continue
-
-        # 解压 tif（保留 zip，SNAP 需要它）
-        if not tif_path.exists():
-            try:
-                with zipfile.ZipFile(zip_path, "r") as zf:
-                    zf.extractall(dem_dir)
-                print(f"  [DEM] {name}.tif 解压完成")
-            except Exception as e:
-                print(f"  [DEM] {name}.zip 解压失败: {e}")
+        print(f"  [DEM] 下载 {name}.zip...")
+        try:
+            r = requests.get(f"{base_url}/{name}.zip", timeout=120, stream=True)
+            if r.status_code == 200:
+                with open(zip_path, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=1024 * 1024):
+                        f.write(chunk)
+                print(f"  [DEM] {name}.zip 下载完成 ({zip_path.stat().st_size // (1024*1024)} MB)")
+            else:
+                print(f"  [DEM] {name}.zip 下载失败: HTTP {r.status_code}")
+        except Exception as e:
+            print(f"  [DEM] {name}.zip 下载失败: {e}")
 
 
 def _ensure_java_home() -> bool:
