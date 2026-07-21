@@ -1,0 +1,16 @@
+# FastAPI 服务
+fastapi>=0.110.0
+uvicorn>=0.27.0
+pydantic>=2.0.0
+
+# PyGMTSAR（InSAR 处理）
+pygmtsar>=2025.4.0
+
+# 数据处理
+numpy>=1.24.0
+xarray>=2024.1.0
+rasterio>=1.3.0
+geopandas>=0.14.0
+
+# 工具库
+requests>=2.31.0

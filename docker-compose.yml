@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  gmtsar:
+    build:
+      context: ./docker/gmtsar
+      dockerfile: Dockerfile
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - DATA_DIR=/app/data
+    # 内存限制（InSAR 处理需要较大内存）
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+    # 健康检查
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s

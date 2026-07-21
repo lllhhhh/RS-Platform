@@ -25,11 +25,14 @@ requests>=2.31.0              # HTTP 请求库
 shapely>=2.0.0                # 几何对象处理
 pyproj>=3.6.0                 # 坐标系转换
 geopandas>=0.14.0             # 地理空间数据处理（读取 shp 文件）
-# S1 SLC 下载通过 Copernicus Data Space STAC API（requests + OAuth2），无需额外库
+scipy>=1.10.0                 # 科学计算库（Lee Sigma 滤波等）
 
-# --- SAR 处理（需单独安装） ---
-# esa_snappy: ESA SNAP 的 Python 绑定，用于 Sentinel-1 SLC/GRD 处理和 InSAR 分析
-# 安装方式：1. 下载安装 ESA SNAP Desktop (https://step.esa.int/)
-#           2. pip install esa-snappy（conda: conda install -c conda-forge esa_snappy）
-#           3. 设置 JAVA_HOME 环境变量指向 SNAP 自带的 JRE（如 D:\esa-snap\jre）
-# 代码中使用: from esa_snappy import ProductIO, GPF, HashMap
+# --- SAR 处理（纯 Python 实现） ---
+sarsen>=0.9.6                 # SAR 处理库（GRD 地形校正、辐射校正）
+xarray-sentinel>=0.9.6        # Sentinel-1 数据读取（xarray 扩展）
+pygmtsar>=2025.4.0            # DEM 下载（Tiles 类）
+
+# --- InSAR 处理（Docker 容器化） ---
+# InSAR 处理通过 GMTSAR Docker 容器执行，主应用通过 HTTP API 调用
+# 启动 Docker 容器：docker-compose up -d gmtsar
+# 容器内包含：GMTSAR + PyGMTSAR + FastAPI 服务

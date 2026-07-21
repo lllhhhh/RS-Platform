@@ -7,6 +7,7 @@ RS-Platform 遥感影像处理系统的后端 API 服务。
 - 提供影像数据的 REST API
 - 支持影像列表、详情、切片、概览图查询
 - 支持触发新的影像下载任务
+- 支持 InSAR 形变监测处理
 - 集成 ZARR 数据服务，高效读取遥感影像
 
 启动方式：
@@ -29,13 +30,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.routers import imagery
+from backend.routers import imagery, insar
 
 # 创建 FastAPI 应用实例
 app = FastAPI(
     title="RS-Platform API",
-    description="遥感影像处理系统 API - 提供 Sentinel-1/2 影像的下载、处理和展示服务",
-    version="1.0.0",
+    description="遥感影像处理系统 API - 提供 Sentinel-1/2 影像的下载、处理和展示服务，以及 InSAR 形变监测",
+    version="1.1.0",
     docs_url="/docs",      # Swagger UI 地址
     redoc_url="/redoc",    # ReDoc 地址
 )
@@ -52,6 +53,7 @@ app.add_middleware(
 
 # 注册路由
 app.include_router(imagery.router)
+app.include_router(insar.router)
 
 
 @app.get("/")

@@ -12,12 +12,19 @@ RS-Platform 是一个基于 Sentinel-1/2 卫星数据的遥感影像处理系统
 # 安装依赖
 pip install -r requirements.txt
 
-# 安装 esa_snappy（S1 预处理和 InSAR 需要）：
-# 1. 安装 ESA SNAP Desktop: https://step.esa.int/ （默认路径 D:\esa-snap）
-# 2. pip install esa-snappy
-# 3. 解压 jpy 模块（如果 import esa_snappy 报错 jpyutil）：
-#    python -c "import zipfile,glob;whl=glob.glob(r'D:\Anaconda\Lib\site-packages\esa_snappy\lib\jpy*win*whl')[0];z=zipfile.ZipFile(whl);[z.extract(n,r'D:\Anaconda\Lib\site-packages\esa_snappy') for n in z.namelist() if n.endswith('.py') or n.endswith('.pyd')]"
-# 4. 设置环境变量 JAVA_HOME=D:\esa-snap\jre
+# ==================== GMTSAR Docker 服务（InSAR 处理）====================
+# 启动 GMTSAR Docker 容器
+docker-compose up -d gmtsar
+
+# 检查服务健康状态
+curl http://localhost:8001/health
+
+# 查看容器日志
+docker-compose logs gmtsar
+
+# ==================== DEM 下载 ====================
+python scripts/dem_downloader.py --bbox 116.0 39.0 117.0 40.0  # 为指定区域下载 DEM
+python scripts/dem_downloader.py --list                          # 列出已下载的 DEM
 
 # ==================== Sentinel-2（光学影像）====================
 # 运行完整管线（9 步：搜索→选择→签名→下载→合成→S1预处理→去云→裁剪→ZARR）
@@ -90,7 +97,10 @@ uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
 | 9 | `05_tif_to_zarr.py` | TIF → ZARR v2（1024×1024 chunk） | ✓ | ✓ | ✓ |
 
 独立分析模块：
-- `09_insar_analysis.py` — InSAR 形变监测：对两幅 SLC 影像执行干涉处理，输出形变图和分析报告
+- `09_insar_analysis.py` — InSAR 形变监测：通过 GMTSAR Docker 服务对两幅 SLC 影像执行干涉处理，输出形变图和分析报告
+- `dem_downloader.py` — DEM 数据下载：使用 PyGMTSAR 的 Tiles 类从 AWS 下载 SRTM 或 Copernicus DEM
+- `insar_client.py` — InSAR 客户端：通过 HTTP API 调用 GMTSAR Docker 服务
+- `s1_preprocess_python.py` — GRD 预处理纯 Python 实现：使用 sarsen 库进行地形校正和辐射校正
 
 ### 覆盖率与场景选择（utils/coverage.py）
 
@@ -143,9 +153,11 @@ uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
 - **SCL 重采样**：必须用最近邻（nearest），不能用双线性等插值，否则会产生无效的分类值。
 - **波段分辨率**：B02/B03/B04 为 10m，SCL 为 20m，需要重采样对齐。
 - **Windows 环境**：ARIA2 路径指向 `aria2-1.37.0-win-64bit-build1/aria2c.exe`。
-- **esa_snappy 依赖**：S1 GRD 预处理（`08_s1_preprocess.py`）和 InSAR 分析（`09_insar_analysis.py`）需要 `esa_snappy`。安装步骤：① 安装 ESA SNAP Desktop ② `pip install esa-snappy` ③ 解压 `esa_snappy/lib/` 下的 jpy wheel 包 ④ 设置 `JAVA_HOME=D:\esa-snap\jre`。代码中使用 `from esa_snappy import ProductIO, GPF, HashMap`。
-- **轨道文件**：GRD 预处理和 InSAR 分析前会自动从 ESA 服务器下载精密轨道文件（POEORB），存储在 `~/.snap/auxdata/Orbits/Sentinel-1/POEORB/`。也可手动下载：`python scripts/orbit_downloader.py 2024-01-06 2024-02-28`。
-- **S1 SLC vs GRD**：`--s1-product grd`（默认）下载 GRD 产品并执行 snappy 预处理；`--s1-product slc` 下载 SLC 产品用于 InSAR 分析。
+- **GMTSAR Docker 服务**：InSAR 处理需要 GMTSAR Docker 容器运行。启动命令：`docker-compose up -d gmtsar`。检查服务：`curl http://localhost:8001/health`。
+- **sarsen 库**：GRD 预处理使用 sarsen 库（纯 Python），无需安装 ESA SNAP。sarsen 自动处理轨道文件下载、地形校正和辐射校正。
+- **DEM 数据**：DEM 数据通过 PyGMTSAR 的 Tiles 类从 AWS 下载，存储在 `data/dem/` 目录。支持 Copernicus GLO-30 和 SRTM。
+- **轨道文件**：InSAR 处理时 PyGMTSAR 会自动下载轨道文件；GRD 预处理时 sarsen 会自动下载轨道文件。
+- **S1 SLC vs GRD**：`--s1-product grd`（默认）下载 GRD 产品并执行 sarsen 预处理；`--s1-product slc` 下载 SLC 产品用于 InSAR 分析。
 
 ## 数据目录结构
 
